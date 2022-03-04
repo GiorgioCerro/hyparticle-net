@@ -1,5 +1,3 @@
-import numpy as np
-#import numpy.linalg as alg
 import torch as th
 import torch.linalg as alg
 from manifold import Manifold
@@ -121,7 +119,7 @@ class PoincareManifold(Manifold):
         factor = self.conformal_factor(base_point)
         mobius_sum = self.mobius_addition(-base_point,vector)
         norm_sum = alg.norm(mobius_sum)
-        norm_sum = th.clamp(norm_sum,-1.,1.)
+        norm_sum = self._clip_vectors(norm_sum)
         log = th.arctanh(norm_sum) * mobius_sum / norm_sum
         log *= (2. / factor)
 
