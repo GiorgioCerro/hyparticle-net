@@ -17,6 +17,7 @@ class HyperEmbedding:
                         'context_size':1,
                         'steps':10}):
 
+        self.epsilon = 1e-8
         self.dim = params_dict['dim']
         self.max_epochs = params_dict['max_epochs']
         self.lr = params_dict['lr']
@@ -226,6 +227,37 @@ class HyperEmbedding:
         return total_loss,grad
 
 
+    def _clip_vectors(self,vectors):
+        '''Clip vectors to have a norm of less than one.
+
+        Parameters
+        ----------
+        vectors : array-like
+            Can be a 1-D or 2-D (in this case the norm of each row is checked)
+
+        Returns
+        -------
+        array-like
+            Array with norms clipped below 1.
+        '''
+        thresh = 1.0 - self.epsilon
+        one_d = len(vectors.shape) == 1
+        if one_d:
+            norm = np.linalg.norm(vectors)
+            if norm < thresh:
+                return vectors
+            else:
+                return thresh * vectors / norm
+        else:
+            norms = np.linalg.norm(vectors,axis=1)
+            if (norms < thresh).all():
+                return vectors
+            else:
+                vectors[norms >= thresh] *= \
+                    (thresh / norms[norms >= thresh])[:,np.newaxis]
+                return vectors
+            
+
     def get_embedding(self,return_loss=None,images=None):
         '''Get the new embedded nodes.
         This runs over many epochs to get the best embedding of the nodes
@@ -263,6 +295,8 @@ class HyperEmbedding:
                 self.embeddings[indices_to_update] = self.manifold.metric.exp(
                         -self.lr * grad_temp[indices_to_update],
                         self.embeddings[indices_to_update])
+                
+                self.embeddings = self._clip_vectors(self.embeddings)
                 #logging.info(f'epoch:{epoch},step:{step},loss:{loss}')
                
                 if images:
@@ -276,30 +310,3 @@ class HyperEmbedding:
         else:
             return 
 
-    def save_img(self,step):
-        fig,ax = plt.subplots(figsize=(20,10))
-        degrees = self.edge_pivot.out.apply(lambda x: len(x)*10).values
-        
-        ax.scatter(self.embeddings[~self.graph.final.data,0],
-            self.embeddings[~self.graph.final.data,1],
-            10*np.log(degrees[~self.graph.final.data]),
-            alpha=1,color='#1AF8FF')
-        ax.scatter(self.embeddings[self.graph.final.data,0],
-            self.embeddings[self.graph.final.data,1],
-            10*np.log(degrees[self.graph.final.data]),
-            alpha=1,color='#FF1AE3')
-        
-        '''
-        ax.scatter(self.embeddings[:,0],self.embeddings[:,1],
-            alpha=1,color='#1AF8FF',s=50)
-        for edge in self.graph.edges:
-            x0,y0 = self.embeddings[edge[0]]
-            x1,y1 = self.embeddings[edge[1]]
-            ax.plot([x0,x1],[y0,y1],alpha=0.3,color='#FF1AE3')
-        '''
-        disk=Circle((0,0),1,color='white',fill=False)
-        ax.add_patch(disk)
-        ax.set_xlim(-1,1)
-        ax.set_ylim(-1,1)
-        plt.savefig('images/frame_'+str(int(step))+'.png')
-        plt.close()
