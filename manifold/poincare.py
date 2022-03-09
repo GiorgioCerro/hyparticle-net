@@ -4,7 +4,7 @@ from manifold import Manifold
 
 class PoincareManifold(Manifold):
     def __init__(self):
-        self.epsilon = 1e-12
+        self.epsilon = 1e-4
         
 
     def _clip_vectors(self,vectors):
@@ -56,9 +56,14 @@ class PoincareManifold(Manifold):
         point_a = self._clip_vectors(point_a)
         point_b = self._clip_vectors(point_b)
 
-        sq_norm_a = alg.norm(point_a) ** 2.
-        sq_norm_b = alg.norm(point_b) ** 2.
-        sq_norm_ab = alg.norm(point_a - point_b) ** 2.
+        if len(point_a.shape) < 2:
+            point_a = th.unsqueeze(point_a, 0)
+        if len(point_b.shape) < 2:
+            point_b = th.unsqueeze(point_b, 0)
+
+        sq_norm_a = alg.norm(point_a,axis=1) ** 2.
+        sq_norm_b = alg.norm(point_b,axis=1) ** 2.
+        sq_norm_ab = alg.norm(point_a - point_b,axis=1) ** 2.
 
         cosh_angle = 1 + 2 * sq_norm_ab / (1 - sq_norm_a) / (1 - sq_norm_b) 
         cosh_angle = th.clamp(cosh_angle, min=1.)
