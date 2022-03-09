@@ -1,0 +1,16 @@
+#!/bin/bash
+
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=8
+#SBATCH --time=01:00:00
+#SBATCH --mem=20G
+
+# mail alert at start, end and abortion of execution
+#SBATCH --mail-type=ALL
+
+# send mail to this address
+#SBATCH --mail-user=g.cerro@soton.ac.uk
+
+source activate pyg
+
+python data_generator_1.py
