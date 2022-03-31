@@ -3,6 +3,7 @@ from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 from graphNN import GNN
 from time import time
+from tqdm import tqdm
 
 from dataHandler import ParticleDataset
 
@@ -12,7 +13,7 @@ def distance_matrix(nodes):
     matrix = th.sqrt( _a + _b + 1e-8) 
     return matrix
 
-dataset = ParticleDataset('data/hz_test.hdf5','signal')
+dataset = ParticleDataset('data/hz_train.hdf5','signal')
 data_batches = DataLoader(dataset, batch_size=4, shuffle=True)
 
 device = th.device('cuda' if th.cuda.is_available() else 'cpu')
@@ -22,11 +23,12 @@ model.double()
 optimizer = th.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
 
 model.train()
-for epoch in range(3):
+for epoch in tqdm(range(3)):
     loss = []
     t = time()
     for data in data_batches:
         optimizer.zero_grad()
+        data.to(device)
         output = model(data)
         
         loss_temp = 0

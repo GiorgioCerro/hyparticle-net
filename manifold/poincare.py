@@ -90,8 +90,8 @@ class PoincareManifold(Manifold):
         if base_point is None:
             base_point = th.zeros(vector.size())
 
-        vector = self._clip_vectors(vector)
-        base_point = self._clip_vectors(base_point)
+        #vector = self._clip_vectors(vector)
+        #base_point = self._clip_vectors(base_point)
 
         factor = self.conformal_factor(base_point)
         norm_vector = alg.norm(vector)
