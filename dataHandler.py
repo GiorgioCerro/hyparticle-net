@@ -58,5 +58,7 @@ class ParticleDataset(Dataset):
         return data
 
 
+    '''
     def __del__(self):
         self.__stack.close()
+    '''
