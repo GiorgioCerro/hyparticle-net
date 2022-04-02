@@ -12,6 +12,8 @@ from tqdm import tqdm
 
 import sys
 sys.path.append('/mainfs/home/gc2c20/myproject/hyperTree/')
+sys.path.append('/mainfs/home/gc2c20/myproject/hyperTree/scripts/ \
+        data_generation/')
 
 import numpy as np
 import graphicle as gcl
@@ -21,7 +23,8 @@ from embedding import HyperEmbedding
 @click.argument('lhe_path', type=click.Path(exists=True))
 @click.argument('pythia_path', type=click.Path(exists=True))
 @click.argument('output_filepath', type=click.Path(path_type=Path))
-def main(lhe_path, pythia_path, output_filepath):
+@click.argument('process_name',type=click.STRING)
+def main(lhe_path, pythia_path, output_filepath,process_name):
     """ Runs data processing scripts to turn raw data from (../raw) into
         cleaned data ready to be analyzed (saved in ../processed).
     """
@@ -52,7 +55,7 @@ def main(lhe_path, pythia_path, output_filepath):
         gen = tqdm(gen)
 
     with HdfWriter(split_path) as hep_file:
-        with hep_file.new_process('signal') as proc:
+        with hep_file.new_process(process_name) as proc:
             for event in gen:
                 with proc.new_event() as event_write:
                     event_write.set_pmu(event.pmu)
