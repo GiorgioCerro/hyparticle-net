@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --nodes=1
-#SBATCH --tasks-per-node=40
-#SBATCH --time=02:00:00
+#SBATCH -p gtx1080
+#SBATCH --gres=gpu:4
+#SBATCH --time=00:20:00
 
 # mail alert at start, end and abortion of execution
 #SBATCH --mail-type=ALL
@@ -11,5 +11,4 @@
 #SBATCH --mail-user=g.cerro@soton.ac.uk
 
 source activate pyg
-
 python run_lightning.py

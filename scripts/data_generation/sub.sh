@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --ntasks-per-node=120     # Tasks per node
+#SBATCH --ntasks-per-node=40     # Tasks per node
 #SBATCH --nodes=3                # Number of nodes requested
 #SBATCH --time=15:00:00          # walltime
 

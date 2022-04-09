@@ -65,19 +65,19 @@ class ParticleDataset(Dataset):
             finals_pmu = graph.pmu[graph.final].data
             finals_hyper = _event.get_custom('hyper_coords')[graph.final.data]
 
-            X = torch.tensor(
-                np.transpose([finals_pmu['x'],finals_pmu['y'],finals_pmu['z'],
-                    finals_pmu['e']]),dtype=torch.float64)
+        X = torch.tensor(
+            np.transpose([finals_pmu['x'],finals_pmu['y'],finals_pmu['z'],
+                finals_pmu['e']]),dtype=torch.float64)
 
-            adj_matrix = self.__adj_matrix(
-                graph.pmu.eta[graph.final.data],
-                    graph.pmu.phi[graph.final.data])
-            knn = gcl.matrix.knn_adj(adj_matrix, k=10)
-            knn = np.maximum(knn, np.transpose(knn))
-            edges = np.array(np.where(knn == True))
-            edge_index = torch.tensor(edges,dtype=torch.long)
+        adj_matrix = self.__adj_matrix(
+            graph.pmu.eta[graph.final.data],
+                graph.pmu.phi[graph.final.data])
+        knn = gcl.matrix.knn_adj(adj_matrix, k=10)
+        knn = np.maximum(knn, np.transpose(knn))
+        edges = np.array(np.where(knn == True))
+        edge_index = torch.tensor(edges,dtype=torch.long)
 
-            y = torch.tensor(finals_hyper,dtype=torch.float64)
+        y = torch.tensor(finals_hyper,dtype=torch.float64)
 
-            data = Data(x=X, edge_index=edge_index, y=y)
-            return data
+        data = Data(x=X, edge_index=edge_index, y=y)
+        return data

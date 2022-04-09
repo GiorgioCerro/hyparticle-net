@@ -1,14 +1,20 @@
-import torch as th
+import torch
 import torch.linalg as alg
-from manifold import Manifold
+from torch import Tensor
+from base import Manifold
 
-class PoincareManifold(Manifold):
+class PoincareBall(Manifold):
     def __init__(self):
-        self.epsilon = 1e-4
+        super(PoincareBall, self).__init__()
+        self.name = 'PoincareBall'
+        self.min_norm = 1e-15
+        self.epsilon = 1e-5
         
 
-    def _clip_vectors(self,vectors):
-        '''Clip vectors to have a norm of less than one.
+    def proj(self,vectors: Tensor) -> Tensor:
+        '''Projection onto the PoincareBall manifold.
+        Clip vectors to have a norm of less than one.
+
 
         Parameters
         ----------
@@ -33,12 +39,22 @@ class PoincareManifold(Manifold):
             if (norms < thresh).all():
                 return vectors
             else:
-                vectors[norms >= thresh] *= \
+                vectors_ = torch.clone(vectors)
+                vectors_[norms >= thresh] = vectors_[norms >= thresh] *  \
                     (thresh / norms[norms >= thresh])[:,None]
+                vectors = vectors_
                 return vectors
+
+
+    def _lambda_x(self,x: Tensor) -> Tensor:
+        '''Return the conformal factor
+        '''
+        norm_x = alg.norm(x,dim=-1)
+        return 2. / (1. - norm_x ** 2.).clamp_min(self.min_norm)
+
                 
 
-    def distance(self,point_a,point_b):
+    def distance(self,x: Tensor,y: Tensor) -> Tensor: 
         '''Compute the geodesic distance between two points.
 
         Parameters
@@ -56,22 +72,26 @@ class PoincareManifold(Manifold):
         point_a = self._clip_vectors(point_a)
         point_b = self._clip_vectors(point_b)
 
-        if len(point_a.shape) < 2:
-            point_a = th.unsqueeze(point_a, 0)
-        if len(point_b.shape) < 2:
-            point_b = th.unsqueeze(point_b, 0)
+        sq_norm_x = alg.norm(x, axis=-1) ** 2.
+        sq_norm_y = alg.norm(y, axis=-1) ** 2.
+        sq_norm_xy = alg.norm(x - y, axis=-1) ** 2.
 
-        sq_norm_a = alg.norm(point_a,axis=1) ** 2.
-        sq_norm_b = alg.norm(point_b,axis=1) ** 2.
-        sq_norm_ab = alg.norm(point_a - point_b,axis=1) ** 2.
-
-        cosh_angle = 1 + 2 * sq_norm_ab / (1 - sq_norm_a) / (1 - sq_norm_b) 
-        cosh_angle = th.clamp(cosh_angle, min=1.)
-        dist = th.acosh(cosh_angle)
+        cosh_angle = 1 + 2 * sq_norm_xy / (1 - sq_norm_x) / (1 - sq_norm_y) 
+        dist = torch.acosh(cosh_angle.clamp_min(1. + 1e-8))
         return dist
 
 
-    def exp_map(self,vector,base_point=None):
+    def egrad2rgrad(self, p: Tensor, dp: Tensor) -> Tensor:
+        '''Translate Euclidean gradient to Riemannian gradient
+        on tangent space
+        '''
+        lambda_p = self._lambda_x(p)
+        dp /= lambda_p.pow(2.)
+        return dp
+
+
+    def expmap(self, vector: Tensor, base_point=torch.zeros_like(vector)
+            ) -> Tensor:
         '''Compute the Riemann exponential of a tangent vector.
 
         Parameters
@@ -87,20 +107,15 @@ class PoincareManifold(Manifold):
             Point on the hypersphere equal to the Riemannian exponential
             of tangent vector at the base point.
         '''
-        if base_point is None:
-            base_point = th.zeros(vector.size())
-
-        #vector = self._clip_vectors(vector)
-        #base_point = self._clip_vectors(base_point)
-
-        factor = self.conformal_factor(base_point)
-        norm_vector = alg.norm(vector)
-        tn = th.tanh(factor * norm_vector / 2.) * vector / norm_vector
-        exp = self.mobius_addition(base_point,tn)
+        factor = self._lambda_x(base_point)
+        norm_vector = alg.norm(vector, dim=-1)
+        tn = torch.tanh(factor * norm_vector / 2.) * vector / norm_vector
+        exp = self.mobius_add(base_point,tn)
         return exp
 
 
-    def log_map(self,vector,base_point=None):
+    def logmap(self, vector: Tensor, base_point=torch.zeros_like(vector)
+            ) -> Tensor:
         '''Compute the logarithmic map on the manifold.
 
         Parameters
@@ -115,31 +130,16 @@ class PoincareManifold(Manifold):
         log : Tensor-like, shape=[]
             Logarithmic of point at the base point.
         '''
-        if base_point is None:
-            base_point = th.zeros(vector.size())
-
-        vector = self._clip_vectors(vector)
-        base_point = self._clip_vectors(base_point)
-
         factor = self.conformal_factor(base_point)
-        mobius_sum = self.mobius_addition(-base_point,vector)
+        mobius_sum = self.mobius_add(-base_point,vector)
         norm_sum = alg.norm(mobius_sum)
         norm_sum = self._clip_vectors(norm_sum)
         log = th.arctanh(norm_sum) * mobius_sum / norm_sum
         log *= (2. / factor)
-
         return log
 
 
-    def conformal_factor(self,x):
-        '''Return the conformal factor
-        '''
-        x = self._clip_vectors(x)
-        norm_x = alg.norm(x)
-        return 2. / (1. - norm_x ** 2.)
-
-
-    def mobius_addition(self,v1,v2):
+    def mobius_add(self, v1: Tensor, v2: Tensor) -> Tensor:
         '''Addition between two vectors in the manifold.
         This is not commutative.
         Also the difference is taken as a sum with the negative vector.
@@ -156,12 +156,9 @@ class PoincareManifold(Manifold):
         addition : Tensor-like, shape=[...]
             mobius addition of v1 + v2
         '''
-        v1 = self._clip_vectors(v1)
-        v2 = self._clip_vectors(v2)
-
-        v1v2 = th.dot(v1,v2)
-        norm_v1 = alg.norm(v1) ** 2.
-        norm_v2 = alg.norm(v2) ** 2.
+        norm_v1 = alg.norm(v1, dim=-1, keepdim=True) ** 2.
+        norm_v2 = alg.norm(v2, dim=-1, keepdim=True) ** 2.
+        v1v2 = (v1 * v2).sum(dim=-1, keepdim=True)
         
         numerator = (1. + 2.*v1v2 + norm_v2) * v1 + (1. - norm_v1)*v2
         denominator = 1. + 2.*v1v2 + norm_v1*norm_v2
@@ -169,92 +166,82 @@ class PoincareManifold(Manifold):
         return addition
 
 
-    def scalar_product(self,vector,scalar):
-        '''Product of a vector with a scalar.
+    def mobius_matvec(self, mat: Tensor, vec: Tensor) -> Tensor:
+        '''Multiplication between a matrix and a vector in the  
+        Poincare ball.
 
         Parameters
         ----------
-        vector : Tensor-like, shape=[m,1]
+        mat : Tensor-like, shape=[m,n]
+            matrix, typically the weight matrix
+        vec : Tensor-like, shape=[n,1]
             vector
-        scalar : float
-            scalar value
 
         Returns
         -------
-        scaled_vector : Tensor-like, shape=[m,1]
-            vector multiplied by the scalar
+        mobius_mult : Tensor-like, shape[m,1]
+            new vector
         '''
-        vector = self._clip_vectors(vector)
+        norm_vector = alg.norm(vec, dim=-1)
+        mult = torch.matmul(mat,vec)
+        norm_mult = alg.norm(mult, dim=-1)
+        mobius_mult = torch.tanh(norm_mult / norm_vector * \
+                torch.arctanh(norm_vector) ) * mult / norm_mult
+        return mobius_mult
 
-        log = self.log_map(vector)
-        scaled_vector = self.exp_map(r * log)
-        return scaled_vector
 
+    def inner(self, x: Tensor, u: Tensor, v=None) -> Tensor:
+        '''Inner product
 
-    def parallel_transport(self,vector,end_point,start_point=None):
+        Parameters:
+            x: Tensor-like
+                tensor
+            u: Tensor-like
+                tensor
+            v: Tensor-like
+                default None
+
+        Returns:
+            inn: Tensor-like
+                inner product
+        '''
+        if v is None:
+            v = u
+        lambda_x = self._lambda_x(x)
+        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=keepdim)
+        
+
+    def ptransp(self, vec: Tensor, point_b: Tensor,
+            point_a=torch.zeros_like(point_b)) -> Tensor:
         '''Parallel transport of a vector from a starting point to
         an end point.
 
         Parameters
         ----------
-        vector : Tensor-like, shape[...,2]
+        vec : Tensor-like, shape[...,2]
             vector to be transported
-        end_point : Tensor-like, shape[...,2]
+        point_b : Tensor-like, shape[...,2]
             end point
-        start_point : Tensor-like, shape[...,2]
-            start_point - by default the center of the disk
+        point_a : Tensor-like, shape[...,2]
+            start point - by default the center of the disk
 
         Returns
         -------
         transported_vec : Tensor-like, shape[...,2]
             the new vector after transported
         '''
-        if start_point is None:
-            start_point = th.zeros(vector.size())
-
-        vector = self._clip_vectors(vector)
-        start_point = self._clip_vectors(start_point)
-        end_point = self._clip_vectors(end_point)
-
-        exp = self.exp_map(vector,start_point)
-        mobius_sum = self.mobius_addition(end_point,exp)
-        transported_vec = self.log_map(mobius_sum,end_point)
+        exp = self.expmap(vec, point_a)
+        mobius_sum = self.mobius_add(point_b, exp)
+        transported_vec = self.logmap(mobius_sum, point_b)
         return transported_vec
 
 
-    def matrix_vector_multiplication(self,matrix,vector):
-        '''Multiplication between a matrix and a vector in the  
-        Poincare ball.
-
-        Parameters
-        ----------
-        matrix : Tensor-like, shape=[m,n]
-            matrix, typically the weight matrix
-        vector : Tensor-like, shape=[n,1]
-            vector
-
-        Returns
-        -------
-        movius_mult : Tensor-like, shape[m,1]
-            new vector
-        '''
-        matrix = self._clip_vectors(matrix)
-        vector = self._clip_vectors(vector)
-
-        norm_vector = alg.norm(vector)
-        mult = th.matmul(matrix,vector)
-        norm_mult = alg.norm(mult)
-        mobius_mult = th.tanh(norm_mul / norm_vector * \
-                th.arctanh(norm_vector) ) * mult / norm_mult
-        return mobius_mult
-
-
-    def bias_translation(self,vector,bias):
+    def bias_translation(self, vec: Tensor, bias: Tensor) -> Tensor:
         '''Translation of a vector by a bias.
 
         Parameters
         ----------
-        vector : Tensor-like, shape=[m,1]
+        vec : Tensor-like, shape=[m,1]
             vector to be translated
         bias : Tensor-like, shape=[m,1]
             vector to apply
@@ -264,12 +251,9 @@ class PoincareManifold(Manifold):
         translated_vec : Tensor-like, shape=[m,1]
             translated vector
         '''
-        vector = self._clip_vectors(vector)
-        bias = self._clip_vectors(bias)
-
-        factor_vector = self.conformal_factor(vector)
-        factor_bias = self.conformal_factor(bias)
+        factor_vector = self._lambda_x(vec)
+        factor_bias = self._lambda_x(bias)
         factor = factor_vector / factor_bias
-        log_vector = self.log_map(bias)
-        translated_vec = self.exp_map(factor * log_vector, vector)
+        log_vector = self.logmap(bias)
+        translated_vec = self.expmap(factor * log_vector, vector)
         return translated_vec
