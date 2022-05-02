@@ -1,7 +1,7 @@
 import torch
 import torch.linalg as alg
 from torch import Tensor
-from base import Manifold
+from manifold.base import Manifold
 
 class PoincareBall(Manifold):
     def __init__(self):
@@ -11,7 +11,7 @@ class PoincareBall(Manifold):
         self.epsilon = 1e-5
         
 
-    def proj(self,vectors: Tensor) -> Tensor:
+    def proj(self, vectors: Tensor) -> Tensor:
         '''Projection onto the PoincareBall manifold.
         Clip vectors to have a norm of less than one.
 
@@ -46,7 +46,11 @@ class PoincareBall(Manifold):
                 return vectors
 
 
-    def _lambda_x(self,x: Tensor) -> Tensor:
+    def proj_tan(self, u: Tensor, v: Tensor) -> Tensor:
+        return u
+
+
+    def _lambda_x(self, x: Tensor) -> Tensor:
         '''Return the conformal factor
         '''
         norm_x = alg.norm(x,dim=-1)
@@ -54,7 +58,7 @@ class PoincareBall(Manifold):
 
                 
 
-    def distance(self,x: Tensor,y: Tensor) -> Tensor: 
+    def distance(self, x: Tensor, y: Tensor) -> Tensor: 
         '''Compute the geodesic distance between two points.
 
         Parameters
@@ -69,9 +73,6 @@ class PoincareBall(Manifold):
         dist : Tensor-like, shape=[...]
             Geodesic distance between points
         '''
-        point_a = self._clip_vectors(point_a)
-        point_b = self._clip_vectors(point_b)
-
         sq_norm_x = alg.norm(x, axis=-1) ** 2.
         sq_norm_y = alg.norm(y, axis=-1) ** 2.
         sq_norm_xy = alg.norm(x - y, axis=-1) ** 2.
@@ -86,12 +87,14 @@ class PoincareBall(Manifold):
         on tangent space
         '''
         lambda_p = self._lambda_x(p)
-        dp /= lambda_p.pow(2.)
+        if len(dp.shape) < 2:
+            dp /= lambda_p.pow(2.)
+        else:
+            dp /= lambda_p.pow(2.).view(-1,1)
         return dp
 
 
-    def expmap(self, vector: Tensor, base_point=torch.zeros_like(vector)
-            ) -> Tensor:
+    def expmap(self, vector: Tensor, base_point=None) -> Tensor:
         '''Compute the Riemann exponential of a tangent vector.
 
         Parameters
@@ -107,15 +110,17 @@ class PoincareBall(Manifold):
             Point on the hypersphere equal to the Riemannian exponential
             of tangent vector at the base point.
         '''
-        factor = self._lambda_x(base_point)
-        norm_vector = alg.norm(vector, dim=-1)
+        if base_point is None:
+            base_point = torch.zeros_like(vector)
+
+        factor = self._lambda_x(base_point).view(-1, 1)
+        norm_vector = alg.norm(vector, dim=-1, keepdim=True)
         tn = torch.tanh(factor * norm_vector / 2.) * vector / norm_vector
         exp = self.mobius_add(base_point,tn)
         return exp
 
 
-    def logmap(self, vector: Tensor, base_point=torch.zeros_like(vector)
-            ) -> Tensor:
+    def logmap(self, vector: Tensor, base_point=None) -> Tensor:
         '''Compute the logarithmic map on the manifold.
 
         Parameters
@@ -130,11 +135,13 @@ class PoincareBall(Manifold):
         log : Tensor-like, shape=[]
             Logarithmic of point at the base point.
         '''
-        factor = self.conformal_factor(base_point)
+        if base_point is None:
+            base_point = torch.zeros_like(vector)
+
+        factor = self._lambda_x(base_point).view(-1,1)
         mobius_sum = self.mobius_add(-base_point,vector)
-        norm_sum = alg.norm(mobius_sum)
-        norm_sum = self._clip_vectors(norm_sum)
-        log = th.arctanh(norm_sum) * mobius_sum / norm_sum
+        norm_sum = alg.norm(mobius_sum).clamp_max(1. - self.epsilon)
+        log = torch.arctanh(norm_sum) * mobius_sum / norm_sum
         log *= (2. / factor)
         return log
 
@@ -182,9 +189,9 @@ class PoincareBall(Manifold):
         mobius_mult : Tensor-like, shape[m,1]
             new vector
         '''
-        norm_vector = alg.norm(vec, dim=-1)
-        mult = torch.matmul(mat,vec)
-        norm_mult = alg.norm(mult, dim=-1)
+        norm_vector = alg.norm(vec, dim=-1, keepdim=True)
+        mult = vec @ mat.transpose(-1,-2)
+        norm_mult = alg.norm(mult, dim=-1, keepdim=True)
         mobius_mult = torch.tanh(norm_mult / norm_vector * \
                 torch.arctanh(norm_vector) ) * mult / norm_mult
         return mobius_mult
@@ -208,11 +215,11 @@ class PoincareBall(Manifold):
         if v is None:
             v = u
         lambda_x = self._lambda_x(x)
-        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=keepdim)
+        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=False)
+        return inn
         
 
-    def ptransp(self, vec: Tensor, point_b: Tensor,
-            point_a=torch.zeros_like(point_b)) -> Tensor:
+    def ptransp(self, vec: Tensor, point_b: Tensor, point_a=None) -> Tensor:
         '''Parallel transport of a vector from a starting point to
         an end point.
 
@@ -230,6 +237,9 @@ class PoincareBall(Manifold):
         transported_vec : Tensor-like, shape[...,2]
             the new vector after transported
         '''
+        if point_a is None:
+            point_a = torch.zeros_like(vector)
+
         exp = self.expmap(vec, point_a)
         mobius_sum = self.mobius_add(point_b, exp)
         transported_vec = self.logmap(mobius_sum, point_b)
@@ -257,3 +267,54 @@ class PoincareBall(Manifold):
         log_vector = self.logmap(bias)
         translated_vec = self.expmap(factor * log_vector, vector)
         return translated_vec
+
+
+    def lorentz_to_poincare(self, x: Tensor, dim=-1) -> Tensor:
+        '''Diffeomorphism that maps from Hyperboloid to Poincare disk.
+        Remember that our metric is different so we are inverting first and 
+        last terms of vectors at the moment.
+
+        Parameters
+        ----------
+        x : Tensor
+            point on Hyperboloid
+        dim : int
+            reduction dimension for operations
+
+        Returns
+        -------
+        tensor
+            points on the Poincare disk
+        '''
+        q = torch.clone(x)
+        q[:,0] = x[:,-1]
+        q[:,-1] = x[:,0]
+
+        dn = q.size(dim) - 1
+        num = q.narrow(dim, 1, dn)
+        den = q.narrow(-dim, 0, 1)
+        k = 1 #manifold negative curvature
+        tensor = num / (den + k)
+        return tensor
+
+
+    def poincare_to_lorentz(self, x: Tensor, dim=-1) -> Tensor:
+        '''Diffeomorphism that maps from Poincare disk to Hyperboloid.
+        For more info about the eq. check the 'lorentz_to_poincare'.
+
+        Parameters
+        ----------
+        x : Tensor
+            point on Poincare ball
+        dim : int
+            reduction dimension for operations
+
+        Returns
+        -------
+        tensor
+            points on the Hyperboloid
+        '''
+        x_norm_square = torch.sum(x*x, dim=dim, keepdim=True)
+        res = (torch.cat((1 + x_norm_square, 2*x), dim=dim)
+            / (1.0 - x_norm_square + self.epsilon))
+        return res

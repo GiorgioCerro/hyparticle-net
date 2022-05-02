@@ -2,7 +2,7 @@
 
 #SBATCH -p gtx1080
 #SBATCH --gres=gpu:4
-#SBATCH --time=00:20:00
+#SBATCH --time=01:00:00
 
 # mail alert at start, end and abortion of execution
 #SBATCH --mail-type=ALL

@@ -1,72 +1,109 @@
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import TQDMProgressBar
-import torch as th
 import torch.nn.functional as F
-from manifold.poincare import PoincareManifold
-poincare = PoincareManifold()
+import torch
+
+from optimizer.radam import RiemannianAdam
+from manifold.poincare import PoincareBall
+manifold = PoincareBall()
+
 
 def distance_matrix(nodes):
-    '''
-    _a = (nodes[:,0][...,None] - nodes[:,0]) ** 2.
-    _b = (nodes[:,1][...,None] - nodes[:,1]) ** 2.
-    matrix = th.sqrt(_a + _b + 1e-8)
-    '''
-    matrix = th.zeros(len(nodes),len(nodes))
+    length = len(nodes)
+    matrix = torch.zeros(length,length)
     for n_idx in range(len(nodes)):
-        matrix[n_idx] = poincare.distance(nodes[n_idx],nodes)
-    return matrix
+        matrix[n_idx] = manifold.distance(
+            torch.unsqueeze(nodes[n_idx],0), nodes) + 1e-8
+    return matrix[torch.triu(torch.ones(length, length), diagonal=1) == 1]
 
-class LitHGNN(pl.LightningModule):
-    def __init__(self,model):
+
+class LitHGCN(pl.LightningModule):
+    def __init__(self, model):
         super().__init__()
-        self.hgnn = model(4,64,64,2)
-        self.hgnn.double()
+        self.hyp_gcn = model(manifold, 4, 64, 64, 2).double()
 
+    def training_step(self, batch, batch_idx):
+        output = self.hyp_gcn(batch)
 
-    def training_step(self,batch,batch_idx):
-        output = self.hgnn(batch)
-
-        loss=0
-        for graph_idx in th.unique(batch.batch):
+        loss_temp=0
+        for graph_idx in torch.unique(batch.batch):
             graph_mask = batch.batch == graph_idx
-            _x = output[graph_mask]
-            _y = batch.y[graph_mask]
 
-            #_x = poincare._clip_vectors(_x)
-            #_y = poincare._clip_vectors(_y)
+            _input = distance_matrix(output[graph_mask])
+            _target = distance_matrix(batch.y[graph_mask])
 
-            _input = distance_matrix(_x)
-            _target = distance_matrix(_y)
+            loss_temp += F.mse_loss(_input,_target)
 
-            loss += F.mse_loss(_input,_target)
+        loss_temp /= batch.num_graphs
+        self.log('training loss', loss_temp, 
+            prog_bar=True, batch_size=batch.num_graphs)
 
-        loss /= batch.num_graphs
-        self.log('training loss',loss)
-        return loss
+        logs={'train loss': loss_temp}
+        batch_dictionary={
+            'loss': loss_temp,
+            'log': logs
+        }
+        return batch_dictionary
+    
 
+    def validation_step(self, batch, batch_idx):
+        output = self.hyp_gcn(batch)
 
-    def test_step(self,batch,batch_idx):
-        output = self.hgnn(batch)
-
-        loss=0
-        for graph_idx in th.unique(batch.batch):
+        loss_temp=0
+        for graph_idx in torch.unique(batch.batch):
             graph_mask = batch.batch == graph_idx
-            _x = output[graph_mask]
-            _y = batch.y[graph_mask]
 
-            _input = distance_matrix(_x)
-            _target = distance_matrix(_y)
+            _input = distance_matrix(output[graph_mask])
+            #_input = _input[torch.triu(torch.ones(length, length),
+            #    diagonal=1) == 1]
 
-            loss += F.mse_loss(_input,_target)
+            _target = distance_matrix(batch.y[graph_mask])
+            #_target = _target[torch.triu(torch.ones(length, length),
+            #    diagonal=1) == 1]
+            
+            loss_temp += F.mse_loss(_input,_target)
 
-        loss /= batch.num_graphs
-        self.log('training loss',loss)
+        loss_temp /= batch.num_graphs
+        self.log('validation loss', loss_temp, batch_size=batch.num_graphs)
+
+        logs={'valid loss': loss_temp}
+        batch_dictionary={
+            'loss': loss_temp,
+            'log': logs
+        }
+
+
+    def test_step(self, batch, batch_idx):
+        output = self.hyp_gcn(batch)
+
+        loss_tepm=0
+        for graph_idx in torch.unique(batch.batch):
+            graph_mask = batch.batch == graph_idx
+
+            _input = distance_matrix(output[graph_mask])
+            #_input = _input[torch.triu(torch.ones(length, length),
+            #    diagonal=1) == 1]
+
+            _target = distance_matrix(batch.y[graph_mask])
+            #_target = _target[torch.triu(torch.ones(length, length),
+            #    diagonal=1) == 1]
+            
+            loss_temp += F.mse_loss(_input,_target)
+
+        loss_temp /= batch.num_graphs
+        self.log('test loss', loss_temp, batch_size=batch.num_graphs)
 
 
     def configure_optimizers(self):
-        optimizer = th.optim.Adam(self.parameters(),lr=1e-2)
+        optimizer = RiemannianAdam(self.hyp_gcn.parameters(),
+            lr=0.1, weight_decay=5e-4)
         return optimizer
 
+
+    def training_epoch_end(self, outputs):
+        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
+        self.logger.experiment.add_scalar('loss/epoch', avg_loss,
+            self.current_epoch)
 
 
 class LitProgressBar(TQDMProgressBar):

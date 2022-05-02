@@ -1,2 +1,2 @@
-from .manifold import Manifold
-from .poincare import PoincareManifold
+from .base import Manifold
+from .poincare import PoincareBall
