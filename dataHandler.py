@@ -15,7 +15,7 @@ class ParticleDataset(Dataset):
 
     def __init__(self,path,process_name):
         self.__process_name = process_name
-        self.__files = glob.glob(path+'/*.hdf5')[:10]
+        self.__files = glob.glob(path+'/*.hdf5')
         self.__ranges = [(-1,-1)]
 
         stack = ExitStack()

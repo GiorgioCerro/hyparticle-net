@@ -17,7 +17,7 @@ from pytorch_lightning.profiler import AdvancedProfiler
 from pytorch_lightning.loggers import TensorBoardLogger
 
 #preparing the data
-train = ParticleDataset('../../data/background','background')
+train = ParticleDataset('../../data/test','background')
 #use 20% of training data for validation
 train_set_size = int(len(train) * 0.8)
 valid_set_size = len(train) - train_set_size
@@ -25,8 +25,8 @@ valid_set_size = len(train) - train_set_size
 seed = torch.Generator().manual_seed(42)
 train_set, valid_set = torch.utils.data.random_split(
     train, [train_set_size, valid_set_size], generator=seed)
-train_set = DataLoader(train_set, batch_size=32, num_workers=2)
-valid_set = DataLoader(valid_set, batch_size=32, num_workers=2)
+train_set = DataLoader(train_set, batch_size=4, num_workers=40)
+valid_set = DataLoader(valid_set, batch_size=4, num_workers=40)
 
 test = ParticleDataset('../data/hz_test.hdf5','signal')
 test = DataLoader(test, batch_size=4, num_workers=1)
@@ -40,16 +40,16 @@ logger = TensorBoardLogger('tb_logs', name='my_model')
 trainer = pl.Trainer(
         logger=logger,
         #profiler=profiler,
-        gpus=4,
-        strategy='ddp',#[DDPPlugin()],
+        #gpus=4,
+        #strategy='ddp',#[DDPPlugin()],
         #accelerator='cpu',
         #devices=2,
         #num_nodes=2,
-        max_epochs=3,
+        max_epochs=5,
         log_every_n_steps=1,
         callbacks=[bar])
 
 trainer.fit(hyper_gcn, train_set, valid_set)
-#trainer.save_checkpoint('model.ckpt')
+trainer.save_checkpoint('model.ckpt')
 
 #trainer.test(model=hgnn,dataloaders=test,ckpt_path='model.ckpt')

@@ -20,7 +20,7 @@ def distance_matrix(nodes):
 class LitHGCN(pl.LightningModule):
     def __init__(self, model):
         super().__init__()
-        self.hyp_gcn = model(manifold, 4, 64, 64, 2).double()
+        self.hyp_gcn = model(manifold, 4, 64, 2).double()
 
     def training_step(self, batch, batch_idx):
         output = self.hyp_gcn(batch)
@@ -38,12 +38,17 @@ class LitHGCN(pl.LightningModule):
         self.log('training loss', loss_temp, 
             prog_bar=True, batch_size=batch.num_graphs)
 
+        self.logger.experiment.add_scalar('loss/train', loss_temp,
+            batch_idx + 250 * self.current_epoch )
+        ''' 
         logs={'train loss': loss_temp}
         batch_dictionary={
             'loss': loss_temp,
             'log': logs
         }
         return batch_dictionary
+        '''
+        return loss_temp
     
 
     def validation_step(self, batch, batch_idx):
@@ -54,23 +59,12 @@ class LitHGCN(pl.LightningModule):
             graph_mask = batch.batch == graph_idx
 
             _input = distance_matrix(output[graph_mask])
-            #_input = _input[torch.triu(torch.ones(length, length),
-            #    diagonal=1) == 1]
-
             _target = distance_matrix(batch.y[graph_mask])
-            #_target = _target[torch.triu(torch.ones(length, length),
-            #    diagonal=1) == 1]
             
             loss_temp += F.mse_loss(_input,_target)
 
         loss_temp /= batch.num_graphs
         self.log('validation loss', loss_temp, batch_size=batch.num_graphs)
-
-        logs={'valid loss': loss_temp}
-        batch_dictionary={
-            'loss': loss_temp,
-            'log': logs
-        }
 
 
     def test_step(self, batch, batch_idx):
@@ -81,12 +75,7 @@ class LitHGCN(pl.LightningModule):
             graph_mask = batch.batch == graph_idx
 
             _input = distance_matrix(output[graph_mask])
-            #_input = _input[torch.triu(torch.ones(length, length),
-            #    diagonal=1) == 1]
-
             _target = distance_matrix(batch.y[graph_mask])
-            #_target = _target[torch.triu(torch.ones(length, length),
-            #    diagonal=1) == 1]
             
             loss_temp += F.mse_loss(_input,_target)
 

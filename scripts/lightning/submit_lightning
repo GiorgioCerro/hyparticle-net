@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH -p gtx1080
-#SBATCH --gres=gpu:4
+#SBATCH --nodes=3
+#SBATCH --tasks-per-node=40
 #SBATCH --time=01:00:00
 
 # mail alert at start, end and abortion of execution

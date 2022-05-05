@@ -98,8 +98,6 @@ class RiemannianAdam(OptimMixin, torch.optim.Adam):
                         point.copy_(new_point)
                         exp_avg.copy_(exp_avg_new)
                     # use copy only for user facing point
-                    #point.copy_(new_point)
-                    #exp_avg.copy_(exp_avg_new)
 
                 
                 if (
@@ -124,6 +122,7 @@ class RiemannianAdam(OptimMixin, torch.optim.Adam):
                 continue
             manifold = _default_manifold
             exp_avg = state['exp_avg']
+            ####### need to correct this as I don't know what projtan is
             p.copy_(manifold.proj(p))
             exp_avg.copy_(manifold.proj_tan(p, exp_avg))
 
