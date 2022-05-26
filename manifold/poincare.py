@@ -11,7 +11,7 @@ class PoincareBall(Manifold):
         self.epsilon = 1e-5
         
 
-    def proj(self, vectors: Tensor) -> Tensor:
+    def proj(self, vectors: Tensor, threshold=None) -> Tensor:
         '''Projection onto the PoincareBall manifold.
         Clip vectors to have a norm of less than one.
 
@@ -20,6 +20,10 @@ class PoincareBall(Manifold):
         ----------
         vectors : Tensor-like
             Can be a 1-D or 2-D (in this case the norm of each row is checked)
+        threshold : float
+            Default is 1 - 1e-5, but can be changed to anything.
+            This is mostly used for clipping the norm of the weights of the
+            nn at their initialisation
 
         Returns
         -------
@@ -27,6 +31,8 @@ class PoincareBall(Manifold):
             Tensor with norms clipped below 1.
         '''
         thresh = 1.0 - self.epsilon
+        if threshold:
+            thresh = threshold
         one_d = len(vectors.shape) == 1
         if one_d:
             norm = alg.norm(vectors)
@@ -50,14 +56,13 @@ class PoincareBall(Manifold):
         return u
 
 
-    def _lambda_x(self, x: Tensor) -> Tensor:
+    def _lambda_x(self, x: Tensor, keepdim: bool = False) -> Tensor:
         '''Return the conformal factor
         '''
-        norm_x = alg.norm(x,dim=-1)
-        return 2. / (1. - norm_x ** 2.).clamp_min(self.min_norm)
+        x_sqnorm = x.pow(2).sum(dim=-1, keepdim=keepdim)
+        return 2 / (1 + x_sqnorm).clamp_min(self.min_norm)
 
                 
-
     def distance(self, x: Tensor, y: Tensor) -> Tensor: 
         '''Compute the geodesic distance between two points.
 
@@ -77,7 +82,7 @@ class PoincareBall(Manifold):
         sq_norm_y = alg.norm(y, axis=-1) ** 2.
         sq_norm_xy = alg.norm(x - y, axis=-1) ** 2.
 
-        cosh_angle = 1 + 2 * sq_norm_xy / (1 - sq_norm_x) / (1 - sq_norm_y) 
+        cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
         dist = torch.acosh(cosh_angle.clamp_min(1. + 1e-8))
         return dist
 
@@ -86,12 +91,7 @@ class PoincareBall(Manifold):
         '''Translate Euclidean gradient to Riemannian gradient
         on tangent space
         '''
-        lambda_p = self._lambda_x(p)
-        if len(dp.shape) < 2:
-            dp /= lambda_p.pow(2.)
-        else:
-            dp /= lambda_p.pow(2.).view(-1,1)
-        return dp
+        return dp / self._lambda_x(p, keepdim=True) ** 2
 
 
     def expmap(self, vector: Tensor, base_point=None) -> Tensor:
@@ -113,7 +113,7 @@ class PoincareBall(Manifold):
         if base_point is None:
             base_point = torch.zeros_like(vector)
 
-        factor = self._lambda_x(base_point).view(-1, 1)
+        factor = self._lambda_x(base_point, keepdim=True)#.view(-1, 1)
         norm_vector = alg.norm(vector, dim=-1, keepdim=True)
         tn = torch.tanh(factor * norm_vector / 2.) * vector / norm_vector
         exp = self.mobius_add(base_point,tn)
@@ -138,9 +138,12 @@ class PoincareBall(Manifold):
         if base_point is None:
             base_point = torch.zeros_like(vector)
 
-        factor = self._lambda_x(base_point).view(-1,1)
+        factor = self._lambda_x(base_point, keepdim=True)
         mobius_sum = self.mobius_add(-base_point,vector)
-        norm_sum = alg.norm(mobius_sum).clamp_max(1. - self.epsilon)
+        norm_sum = alg.norm(
+            mobius_sum, axis=-1, keepdim=True)
+        norm_sum = torch.clamp(norm_sum, self.min_norm, 1 - self.epsilon)
+
         log = torch.arctanh(norm_sum) * mobius_sum / norm_sum
         log *= (2. / factor)
         return log
@@ -197,7 +200,8 @@ class PoincareBall(Manifold):
         return mobius_mult
 
 
-    def inner(self, x: Tensor, u: Tensor, v=None) -> Tensor:
+    def inner(self, x: Tensor, u: Tensor, v=None, 
+            keepdim: bool = True) -> Tensor:
         '''Inner product
 
         Parameters:
@@ -214,8 +218,8 @@ class PoincareBall(Manifold):
         '''
         if v is None:
             v = u
-        lambda_x = self._lambda_x(x)
-        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=False)
+        lambda_x = self._lambda_x(x, keepdim=True)
+        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=True)
         return inn
         
 
@@ -261,8 +265,8 @@ class PoincareBall(Manifold):
         translated_vec : Tensor-like, shape=[m,1]
             translated vector
         '''
-        factor_vector = self._lambda_x(vec)
-        factor_bias = self._lambda_x(bias)
+        factor_vector = self._lambda_x(vec, keepdim=True)
+        factor_bias = self._lambda_x(bias, keepdim=True)
         factor = factor_vector / factor_bias
         log_vector = self.logmap(bias)
         translated_vec = self.expmap(factor * log_vector, vector)

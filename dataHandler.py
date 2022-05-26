@@ -9,6 +9,16 @@ from torch_geometric.data import Data
 
 from tqdm import tqdm
 from heparchy.read.hdf import HdfReader
+from manifold.poincare import PoincareBall
+manifold = PoincareBall()
+
+def matrix_distance(nodes):
+    matrix = torch.zeros(len(nodes), len(nodes))
+    for n_idx in range(len(nodes)):
+        matrix[n_idx] = manifold.distance(
+            torch.unsqueeze(nodes[n_idx],0),nodes) + 1e-8
+    return matrix**2
+
 
 class ParticleDataset(Dataset):
     '''Particles shower dataset.'''
@@ -46,6 +56,14 @@ class ParticleDataset(Dataset):
         return np.sqrt(_eta**2 + _phi**2)
 
 
+    def __matrix_distance(self,nodes):
+        matrix = torch.zeros(len(nodes), len(nodes))
+        for n_idx in range(len(nodes)):
+            matrix[n_idx] = manifold.distance(
+                torch.unsqueeze(nodes[n_idx],0),nodes) + 1e-8
+        return matrix**2
+
+
     def __getitem__(self,idx):
         _file_idx = int(np.where(
             np.logical_and(np.less_equal(self.__ranges['ini'],idx),
@@ -72,11 +90,21 @@ class ParticleDataset(Dataset):
         adj_matrix = self.__adj_matrix(
             graph.pmu.eta[graph.final.data],
                 graph.pmu.phi[graph.final.data])
-        knn = gcl.matrix.knn_adj(adj_matrix, k=10)
+        knn = gcl.matrix.knn_adj(adj_matrix, k=6)
         knn = np.maximum(knn, np.transpose(knn))
         edges = np.array(np.where(knn == True))
         edge_index = torch.tensor(edges,dtype=torch.long)
 
+        '''
+        finals_hyper = torch.tensor(finals_hyper, dtype=torch.float64)
+        all_distances = self.__matrix_distance(finals_hyper)
+        sorting = torch.argsort(all_distances, axis=-1)
+        random_sampling = torch.randint(0, len(X)-2, (2,len(X)))
+        y = torch.zeros(len(X), 3, dtype=torch.float64)
+        
+        y[:,0] = sorting[:,1]
+        #y[:,1:] = sorting[:,2:][random_sampling]
+        ''' 
         y = torch.tensor(finals_hyper,dtype=torch.float64)
 
         data = Data(x=X, edge_index=edge_index, y=y)

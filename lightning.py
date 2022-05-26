@@ -14,13 +14,16 @@ def distance_matrix(nodes):
     for n_idx in range(len(nodes)):
         matrix[n_idx] = manifold.distance(
             torch.unsqueeze(nodes[n_idx],0), nodes) + 1e-8
-    return matrix[torch.triu(torch.ones(length, length), diagonal=1) == 1]
+    matrix = matrix[torch.triu(torch.ones(length, length), diagonal=1) == 1]
+    return matrix**2.
 
 
 class LitHGCN(pl.LightningModule):
-    def __init__(self, model):
+    def __init__(self, model, lr):
         super().__init__()
-        self.hyp_gcn = model(manifold, 4, 64, 2).double()
+        self.hyp_gcn = model(manifold, 4, 32, 2).double()
+        self.lr = lr
+        #self.hyp_gcn = model(manifold, 4, 2).double()
 
     def training_step(self, batch, batch_idx):
         output = self.hyp_gcn(batch)
@@ -39,15 +42,8 @@ class LitHGCN(pl.LightningModule):
             prog_bar=True, batch_size=batch.num_graphs)
 
         self.logger.experiment.add_scalar('loss/train', loss_temp,
-            batch_idx + 250 * self.current_epoch )
-        ''' 
-        logs={'train loss': loss_temp}
-        batch_dictionary={
-            'loss': loss_temp,
-            'log': logs
-        }
-        return batch_dictionary
-        '''
+            self.global_step)
+
         return loss_temp
     
 
@@ -85,7 +81,7 @@ class LitHGCN(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = RiemannianAdam(self.hyp_gcn.parameters(),
-            lr=0.1, weight_decay=5e-4)
+            lr=self.lr, weight_decay=5e-4)
         return optimizer
 
 

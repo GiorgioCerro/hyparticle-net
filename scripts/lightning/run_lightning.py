@@ -9,7 +9,6 @@ currentdir = os.path.dirname( \
 parentdir = os.path.dirname(os.path.dirname(currentdir))
 sys.path.insert(0,parentdir)
 
-#from graphNN import GNN
 from models.hgcn import HyperGCN
 from dataHandler import ParticleDataset
 from lightning import LitHGCN, LitProgressBar
@@ -25,14 +24,14 @@ valid_set_size = len(train) - train_set_size
 seed = torch.Generator().manual_seed(42)
 train_set, valid_set = torch.utils.data.random_split(
     train, [train_set_size, valid_set_size], generator=seed)
-train_set = DataLoader(train_set, batch_size=4, num_workers=40)
-valid_set = DataLoader(valid_set, batch_size=4, num_workers=40)
+train_set = DataLoader(train_set, batch_size=8, num_workers=40)
+valid_set = DataLoader(valid_set, batch_size=8, num_workers=40)
 
 test = ParticleDataset('../data/hz_test.hdf5','signal')
 test = DataLoader(test, batch_size=4, num_workers=1)
 
 
-hyper_gcn = LitHGCN(HyperGCN)
+hyper_gcn = LitHGCN(HyperGCN, 1e-4)
 bar = LitProgressBar()
 profiler = AdvancedProfiler(dirpath='.', filename='perf_logs')
 logger = TensorBoardLogger('tb_logs', name='my_model')
@@ -40,16 +39,20 @@ logger = TensorBoardLogger('tb_logs', name='my_model')
 trainer = pl.Trainer(
         logger=logger,
         #profiler=profiler,
-        #gpus=4,
+        #gpus=2,
         #strategy='ddp',#[DDPPlugin()],
         #accelerator='cpu',
         #devices=2,
         #num_nodes=2,
         max_epochs=5,
-        log_every_n_steps=1,
-        callbacks=[bar])
+        log_every_n_steps=2,
+        callbacks=[bar],
+        auto_lr_find=False)
 
+#lr_finder = trainer.tuner.lr_find(hyper_gcn, train_set, valid_set)
+#hyper_gcn.hparams.lr = lr_finder.suggestion()
+#print(f'this is the best lr: {hyper_gcn.hparams.lr}')
 trainer.fit(hyper_gcn, train_set, valid_set)
-trainer.save_checkpoint('model.ckpt')
+trainer.save_checkpoint('m_local_agg_6knn.ckpt')
 
 #trainer.test(model=hgnn,dataloaders=test,ckpt_path='model.ckpt')

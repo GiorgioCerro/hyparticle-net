@@ -48,17 +48,15 @@ class RiemannianAdam(OptimMixin, torch.optim.Adam):
                     exp_avg = state['exp_avg']
                     exp_avg_sq = state['exp_avg_sq']
                     # Actual step
+                    #print(f'point: {point}')
+                    #print(f'grad: {grad}')
+                    #print(f'betas: {betas}')
                     grad.add_(point, alpha=weight_decay)
-                    grad = manifold.egrad2rgrad(point,grad)
-                    inner = manifold.inner(point,grad)
-                    if len(grad.shape) < 2:
-                        exp_avg.mul_(betas[0]).add_(grad, alpha=1-betas[0])
-                        exp_avg_sq.mul_(betas[1]).add_(
-                            inner, alpha=1-betas[1])
-                    else:
-                        exp_avg.mul_(betas[0]).add_(grad, alpha=1-betas[0])
-                        exp_avg_sq.mul_(betas[1]).add_(
-                            inner.view(-1,1), alpha=1-betas[1])
+                    grad = manifold.egrad2rgrad(point, grad)
+                    inner = manifold.inner(point, grad)
+                    
+                    exp_avg.mul_(betas[0]).add_(grad, alpha=1-betas[0])
+                    exp_avg_sq.mul_(betas[1]).add_(inner, alpha=1-betas[1])
 
                     bias_correction1 = 1 - betas[0] ** group['step']
                     bias_correction2 = 1 - betas[1] ** group['step']
@@ -85,18 +83,15 @@ class RiemannianAdam(OptimMixin, torch.optim.Adam):
                     '''
                     step_size = learning_rate * bias_correction2 ** 0.5 /\
                         bias_correction1
+                    
                     new_point = manifold.proj(manifold.expmap(
                         - step_size * direction, point))
                     exp_avg_new = manifold.ptransp(exp_avg, new_point,
                         point)
 
                     # use copy only for user facing point
-                    if len(point.shape) < 2:
-                        point.copy_(new_point[0])
-                        exp_avg.copy_(exp_avg_new[0])
-                    else:
-                        point.copy_(new_point)
-                        exp_avg.copy_(exp_avg_new)
+                    point.copy_(new_point)
+                    exp_avg.copy_(exp_avg_new)
                     # use copy only for user facing point
 
                 
