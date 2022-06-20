@@ -15,7 +15,7 @@ class HyperEmbedding:
                         'lr':.05,
                         'n_negative':2,
                         'context_size':1,
-                        'steps':10}):
+                        'steps':5}):
 
         self.epsilon = 1e-8
         self.dim = params_dict['dim']

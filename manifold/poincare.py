@@ -63,7 +63,7 @@ class PoincareBall(Manifold):
         return 2 / (1 + x_sqnorm).clamp_min(self.min_norm)
 
                 
-    def distance(self, x: Tensor, y: Tensor) -> Tensor: 
+    def sqdist(self, x: Tensor, y: Tensor) -> Tensor: 
         '''Compute the geodesic distance between two points.
 
         Parameters
@@ -84,7 +84,7 @@ class PoincareBall(Manifold):
 
         cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
         dist = torch.acosh(cosh_angle.clamp_min(1. + 1e-8))
-        return dist
+        return dist**2
 
 
     def egrad2rgrad(self, p: Tensor, dp: Tensor) -> Tensor:

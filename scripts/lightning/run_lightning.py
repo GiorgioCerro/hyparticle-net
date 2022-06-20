@@ -44,7 +44,7 @@ trainer = pl.Trainer(
         #accelerator='cpu',
         #devices=2,
         #num_nodes=2,
-        max_epochs=5,
+        max_epochs=10,
         log_every_n_steps=2,
         callbacks=[bar],
         auto_lr_find=False)
@@ -52,7 +52,7 @@ trainer = pl.Trainer(
 #lr_finder = trainer.tuner.lr_find(hyper_gcn, train_set, valid_set)
 #hyper_gcn.hparams.lr = lr_finder.suggestion()
 #print(f'this is the best lr: {hyper_gcn.hparams.lr}')
-trainer.fit(hyper_gcn, train_set, valid_set)
-trainer.save_checkpoint('m_local_agg_6knn.ckpt')
+trainer.fit(hyper_gcn, train_set)
+trainer.save_checkpoint('m_test.ckpt')
 
 #trainer.test(model=hgnn,dataloaders=test,ckpt_path='model.ckpt')

@@ -8,6 +8,7 @@ import click
 from showerpipe.generator import PythiaGenerator
 from showerpipe.lhe import split, LheData, count_events
 from heparchy.write import HdfWriter
+from heparchy.data.event import SignalVertex
 from tqdm import tqdm
 
 import sys
@@ -64,7 +65,7 @@ def main(lhe_path, pythia_path, output_filepath,process_name):
                     event_write.set_color(event.color)
                     event_write.set_helicity(event.helicity)
                     event_write.set_edges(event.edges)
-                    event_write.set_mask('final', event.final)
+                    event_write.set_mask('final', data=event.final)
 
                     graph = gcl.Graphicle.from_numpy(
                         edges = event.edges,

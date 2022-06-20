@@ -26,6 +26,7 @@ class ParticleDataset(Dataset):
     def __init__(self,path,process_name):
         self.__process_name = process_name
         self.__files = glob.glob(path+'/*.hdf5')
+        #print(self.__files)
         self.__ranges = [(-1,-1)]
 
         stack = ExitStack()
@@ -59,9 +60,35 @@ class ParticleDataset(Dataset):
     def __matrix_distance(self,nodes):
         matrix = torch.zeros(len(nodes), len(nodes))
         for n_idx in range(len(nodes)):
-            matrix[n_idx] = manifold.distance(
+            matrix[n_idx] = manifold.sqdist(
                 torch.unsqueeze(nodes[n_idx],0),nodes) + 1e-8
-        return matrix**2
+        return matrix
+
+
+    def __get_classes(self, nodes, links, graph):
+        idx_nodes = [np.where(graph.edges['out'] == pt)[0] for pt in nodes]
+        true_values = [[],[]]
+        false_values = [[],[]]
+        for i in range(len(nodes)):
+            parent_1 = graph.edges['in'][idx_nodes[i]]
+            for j in range(i+1, len(nodes)):
+                parent_2 = graph.edges['in'][idx_nodes[j]]
+                if len(set(parent_1) & set(parent_2)) > 0:
+                    true_values[0].append(i)
+                    true_values[1].append(j)
+                else:
+                    false_values[0].append(i)
+                    false_values[1].append(j)
+        
+        len_sample = len(true_values[0])
+        falses = np.array(false_values)
+        neg_sample = np.random.randint(0, len(falses[0]), (1,len_sample))[0]
+
+        false_values = np.array(
+            [falses[0][neg_sample],falses[1][neg_sample]])
+        false_values = torch.tensor(false_values)
+        true_values = torch.tensor(true_values)
+        return true_values, false_values
 
 
     def __getitem__(self,idx):
@@ -80,7 +107,9 @@ class ParticleDataset(Dataset):
                 pdg = _event.pdg,
                 final = _event.mask('final'))
 
+            graph.adj = gcl.transform.particle_as_node(graph.adj)
             finals_pmu = graph.pmu[graph.final].data
+            finals_nodes = graph.nodes[graph.final]
             finals_hyper = _event.get_custom('hyper_coords')[graph.final.data]
 
         X = torch.tensor(
@@ -90,22 +119,15 @@ class ParticleDataset(Dataset):
         adj_matrix = self.__adj_matrix(
             graph.pmu.eta[graph.final.data],
                 graph.pmu.phi[graph.final.data])
-        knn = gcl.matrix.knn_adj(adj_matrix, k=6)
+        #_x = manifold.lorentz_to_poincare(X)
+        #adj_matrix = np.array(self.__matrix_distance(_x))
+        knn = gcl.matrix.knn_adj(adj_matrix, k=3)
         knn = np.maximum(knn, np.transpose(knn))
         edges = np.array(np.where(knn == True))
         edge_index = torch.tensor(edges,dtype=torch.long)
 
-        '''
-        finals_hyper = torch.tensor(finals_hyper, dtype=torch.float64)
-        all_distances = self.__matrix_distance(finals_hyper)
-        sorting = torch.argsort(all_distances, axis=-1)
-        random_sampling = torch.randint(0, len(X)-2, (2,len(X)))
-        y = torch.zeros(len(X), 3, dtype=torch.float64)
-        
-        y[:,0] = sorting[:,1]
-        #y[:,1:] = sorting[:,2:][random_sampling]
-        ''' 
-        y = torch.tensor(finals_hyper,dtype=torch.float64)
+        y = self.__get_classes(finals_nodes, edge_index, graph)
+        #y = torch.tensor(classes, dtype=torch.float64)
 
         data = Data(x=X, edge_index=edge_index, y=y)
         return data

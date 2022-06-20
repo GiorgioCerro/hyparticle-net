@@ -12,7 +12,7 @@ class HyperbolicGraphConvolution(nn.Module):
     '''Hyperbolic graph convolution layer.
     '''
     def __init__(self, manifold, in_channels, out_channels,
-        dropout=0.3, alpha=0.6, self_loops=True, use_activation=False,
+        dropout=0.3, alpha=0.2, self_loops=True, use_activation=False,
         use_aggregation=False):
         super(HyperbolicGraphConvolution, self).__init__()
         self.linear = HyperbolicLinear(manifold, in_channels, out_channels)
@@ -25,7 +25,7 @@ class HyperbolicGraphConvolution(nn.Module):
             #self.agg = HyperbolicAggregation(manifold, out_channels)
             self.agg = HyperbolicLocalAgg(manifold, out_channels)
         if self.use_activation == True:
-            self.activation = HyperbolicActivation(manifold, nn.LeakyReLU(alpha))
+            self.activation = HyperbolicActivation(manifold, nn.ReLU())
         #self.attention = HyperbolicAttention(manifold, out_channels, 
         #    dropout, alpha)
         

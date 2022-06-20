@@ -4,7 +4,7 @@ from torch import Tensor
 
 class Manifold(ABC):
     @abstractmethod
-    def distance(self, u: Tensor, v: Tensor) -> Tensor:
+    def sqdist(self, u: Tensor, v: Tensor) -> Tensor:
         '''
         Distance function
         '''
