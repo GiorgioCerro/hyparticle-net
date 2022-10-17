@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/
+py.py
+.ipynb_checkpoints/
+testing.ipynb
+visualise.ipynb
