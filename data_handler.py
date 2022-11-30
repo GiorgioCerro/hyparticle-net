@@ -15,7 +15,7 @@ from manifold.poincare import PoincareBall
 class ParticleDataset(Dataset):
     '''Particles shower dataset.'''
 
-    def __init__(self, path):
+    def __init__(self, path) -> None:
         self.__files = glob.glob(path + '/*.hdf5')
         self.__ranges = [(-1, -1)]
 
