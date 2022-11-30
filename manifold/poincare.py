@@ -114,7 +114,8 @@ class PoincareBall(Manifold):
             base_point = torch.zeros_like(vector)
 
         factor = self._lambda_x(base_point, keepdim=True)#.view(-1, 1)
-        norm_vector = alg.norm(vector, dim=-1, keepdim=True)
+        norm_vector = alg.norm(vector, dim=-1, 
+                                keepdim=True).clamp_min(self.min_norm)
         tn = torch.tanh(factor * norm_vector / 2.) * vector / norm_vector
         exp = self.mobius_add(base_point,tn)
         return exp
@@ -172,7 +173,7 @@ class PoincareBall(Manifold):
         
         numerator = (1. + 2.*v1v2 + norm_v2) * v1 + (1. - norm_v1)*v2
         denominator = 1. + 2.*v1v2 + norm_v1*norm_v2
-        addition = numerator/denominator
+        addition = numerator / denominator.clamp_min(self.min_norm)
         return addition
 
 
@@ -192,9 +193,11 @@ class PoincareBall(Manifold):
         mobius_mult : Tensor-like, shape[m,1]
             new vector
         '''
-        norm_vector = alg.norm(vec, dim=-1, keepdim=True)
+        norm_vector = alg.norm(vec, dim=-1, 
+                                keepdim=True).clamp_min(self.min_norm)
         mult = vec @ mat.transpose(-1,-2)
-        norm_mult = alg.norm(mult, dim=-1, keepdim=True)
+        norm_mult = alg.norm(mult, dim=-1, 
+                                keepdim=True).clamp_min(self.min_norm)
         mobius_mult = torch.tanh(norm_mult / norm_vector * \
                 torch.arctanh(norm_vector) ) * mult / norm_mult
         return mobius_mult

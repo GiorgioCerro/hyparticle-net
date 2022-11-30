@@ -7,59 +7,87 @@ from torch import Tensor
 from torch_geometric.nn.inits import glorot, zeros
 from torch_geometric.utils import to_dense_adj, add_self_loops
 
+from temp_layers.att_layers import DenseAtt
 
-class HyperbolicGraphConvolution(nn.Module):
-    '''Hyperbolic graph convolution layer.
+
+class HNNLayer(nn.Module):
     '''
-    def __init__(self, manifold, in_channels, out_channels,
-        dropout=0.3, alpha=0.2, self_loops=True, use_activation=False,
-        use_aggregation=False):
-        super(HyperbolicGraphConvolution, self).__init__()
-        self.linear = HyperbolicLinear(manifold, in_channels, out_channels)
-        self.use_activation = use_activation
-        self.use_aggregation = use_aggregation
-
-        self.agg = None
-        self.activation = None
-        if self.use_aggregation == True:
-            #self.agg = HyperbolicAggregation(manifold, out_channels)
-            self.agg = HyperbolicLocalAgg(manifold, out_channels)
-        if self.use_activation == True:
-            self.activation = HyperbolicActivation(manifold, nn.ReLU())
-        #self.attention = HyperbolicAttention(manifold, out_channels, 
-        #    dropout, alpha)
+    Hyperbolic neural networks layer.
+    '''
+    def __init__(
+            self, 
+            manifold, 
+            in_features: int,
+            out_features: int,
+            dropout: float=0.,
+            act=None,
+            use_bias: bool=True):
+        super(HNNLayer, self).__init__()
         
-        self.self_loops = self_loops
+        self.act = act
+        self.linear = HypLinear(manifold, in_features, out_features, dropout, 
+                                use_bias)
+        if self.act:
+            self.hyp_act = HypAct(manifold, act)
 
-    def forward(self, x, edge_index):
-        if self.self_loops:
-            edge_index = add_self_loops(edge_index)[0]
-        adjacency = to_dense_adj(edge_index)[0].double() 
-
+    def forward(self, x: Tensor) -> Tensor:
         h = self.linear.forward(x)
-        if self.agg is not None:
-            h = self.agg.forward(h, adjacency)
-            #h = self.attention.forward(h, adjacency)
-        if self.activation is not None:
-            h = self.activation.forward(h)
+        if self.act:
+            h = self.hyp_act.forward(h)
         return h
 
-class HyperbolicLinear(nn.Module):
+
+class HGCNLayer(nn.Module):
+    #Hyperbolic graph convolution layer.
+    def __init__(
+            self, 
+            manifold, 
+            in_features: int, 
+            out_features: int,
+            dropout: float=0., 
+            act=None,
+            use_bias: bool=True,
+            local_agg=None):
+        super(HGCNLayer, self).__init__()
+        self.linear = HypLinear(manifold, in_features, out_features, dropout,
+                                use_bias)
+        self.agg = HypAgg(manifold, out_features, dropout, local_agg)
+        self.act = act
+        if self.act:
+            self.act = HypAct(manifold, act)
+
+    def forward(self, x, edge_index):
+        adjacency = to_dense_adj(edge_index)[0]#.double() 
+
+        h = self.linear.forward(x)
+        h = self.agg.forward(h, adjacency)
+        if self.act:
+            h = self.act.forward(h)
+        return h
+
+
+class HypLinear(nn.Module):
     '''Hyperbolic neural networks layer.
     '''
-    def __init__(self, manifold, in_channels, out_channels, 
-            dropout=0., bias=False):
-        super(HyperbolicLinear, self).__init__()
+    def __init__(
+            self, 
+            manifold, 
+            in_channels: int,
+            out_channels: int, 
+            dropout: float=0., 
+            use_bias: bool=True):
+        super(HypLinear, self).__init__()
         
         self.manifold = manifold
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.dropout = dropout
+        self.use_bias = use_bias
         
-        if bias:
-            self.bias = Parameter(torch.Tensor(out_channels))
-        else:
-            self.register_parameter('bias', None)
+        if self.use_bias:
+            self.bias = Parameter(torch.zeros(out_channels))
+        #else:
+        #    self.register_parameter('bias', None)
         self.weights = Parameter(torch.Tensor(out_channels, in_channels))
         self.reset_parameters()
 
@@ -67,7 +95,7 @@ class HyperbolicLinear(nn.Module):
         #_check = _s > (1 - 1e-4)
         #_s[_check] = torch.rand(len(_s[_check]))
         #_w = torch.mm(torch.mm(_u, torch.diag(_s)), _v.t())
-        self.weights = Parameter(manifold.proj(self.weights, 0.9))
+        self.weights = Parameter(manifold.proj(self.weights, 0.5))
 
 
     def reset_parameters(self):
@@ -75,23 +103,24 @@ class HyperbolicLinear(nn.Module):
         init.xavier_uniform_(self.weights, gain = 1.4)
         #zeros(self.bias)
 
-    def forward(self,x):
+    def forward(self, x):
         drop_weight = F.dropout(self.weights, self.dropout,
-            training = self.training)
+                                training=self.training)
         result = self.manifold.mobius_matvec(drop_weight, x)
         #result = self.manifold.mobius_matvec(self.weights, x)
 
-        if self.bias is not None:
-            result = self.manifold.mobius_add(
-                result, self.bias.repeat(len(result),1))
+        if self.use_bias:
+            bias = self.manifold.proj(self.bias.view(1, -1))
+            hyp_bias = self.manifold.expmap(bias)
+            hyp_bias = self.manifold.proj(hyp_bias)
+            result = self.manifold.mobius_add(result, hyp_bias)
 
         result = self.manifold.proj(result)
         return result
 
-
+'''
 class HyperbolicAttention(nn.Module):
-    '''Hyperbolic aggregation layer
-    '''
+    #Hyperbolic aggregation layer
 
     def __init__(self, manifold, in_channels, dropout, alpha, concat=True):
         super(HyperbolicAttention, self).__init__()
@@ -136,37 +165,60 @@ class HyperbolicAttention(nn.Module):
         # broadcast add
         e = Wh1 + Wh2.T
         return self.leakyrelu(e)
+'''
 
-
-class HyperbolicActivation(nn.Module):
-    '''Hyperbolic activation layer
+class HypAct(nn.Module):
     '''
-    def __init__(self, manifold,  activation):
-        super(HyperbolicActivation, self).__init__()
+    Hyperbolic activation layer
+    '''
+    def __init__(self, manifold,  act):
+        super(HypAct, self).__init__()
         self.manifold = manifold
-        self.activation = activation
+        self.act = act
 
     def forward(self, x):
         x_tangent = self.manifold.logmap(x)
-        x_activated = self.activation(x_tangent)
+        x_activated = self.act(x_tangent)
         x_hyperbolic = self.manifold.proj(self.manifold.expmap(x_activated))
         return x_hyperbolic
 
 
-class HyperbolicAggregation(nn.Module):
-    def __init__(self, manifold, in_channels):
-        super(HyperbolicAggregation, self).__init__()
+class HypAgg(nn.Module):
+    def __init__(self, manifold, in_features, dropout, use_att=None, 
+                    local_agg=None):
+        super(HypAgg, self).__init__()
         self.manifold = manifold
-        self.in_channels = in_channels
+        self.in_features = in_features
+        self.dropout = dropout
+        self.local_agg = local_agg
+        self.use_att = use_att
+        if self.use_att:
+            self.att = DenseAtt(in_features, dropout)
 
     def forward(self, x, adj):
         x_tangent = self.manifold.logmap(x)
-        #neigh = torch.sum(adj, axis=-1).view(-1,1)
-        res = torch.matmul(adj, x_tangent) # / neigh
-        res = self.manifold.proj(self.manifold.expmap(res))
-        return res
+        '''
+        if self.local_agg:
+            x_local_tangent = []
+            for i in range(x.size(0)):
+                x_local_tangent.append(self.manifold.logmap(x[i], x))
+            x_local_tangent = torch.stack(x_local_tangent, dim=0)
+            support_t = torch.mean(x_local_tangent, dim=1)
+            #support_t = torch.max(x_local_tangent, dim=1)[0]
+            output = self.manifold.proj(self.manifold.expmap(x, support_t))
+            return output
+        '''
+        if self.use_att:
+            adj_att = self.att(x_tangent, adj)
+            support_t = torch.matmul(adj_att, x_tangent)
 
+        else:
+            support_t = torch.sparse.mm(adj, x_tangent)
 
+        result = self.manifold.proj(self.manifold.expmap(support_t))
+        return result
+
+'''
 class HyperbolicLocalAgg(nn.Module):
     def __init__(self, manifold, in_channels):
         super(HyperbolicLocalAgg, self).__init__()
@@ -182,3 +234,4 @@ class HyperbolicLocalAgg(nn.Module):
                     x[adj_mask[k]], x[k]), axis=0), x[k]).view(1,-1))
         x_local_agg = torch.cat(x_local)
         return x_local_agg
+'''
