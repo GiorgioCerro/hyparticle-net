@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from torch.nn import Linear
 import torch.nn.functional as F
+from torch.utils.data import ConcatDataset
 from time import time
 
 from torch_geometric.loader import DataLoader
@@ -21,16 +22,17 @@ manifold = PoincareBall()
 
 
 #loading the data
-train_bkg = ParticleDataset('data/compare_tree/train_bkg/')
-train_sig = ParticleDataset('data/compare_tree/train_sig/')
-valid_bkg = ParticleDataset('data/compare_tree/valid_bkg/')
-valid_sig = ParticleDataset('data/compare_tree/valid_sig/')
-test_bkg = ParticleDataset('data/compare_tree/test_bkg/')
-test_sig = ParticleDataset('data/compare_tree/test_sig/')
+PATH = 'data/compare_tree/'
+train_bkg = ParticleDataset(PATH + '/train_bkg/')
+train_sig = ParticleDataset(PATH + '/train_sig/')
+valid_bkg = ParticleDataset(PATH + '/valid_bkg/')
+valid_sig = ParticleDataset(PATH + '/valid_sig/')
+test_bkg = ParticleDataset(PATH + '/test_bkg/')
+test_sig = ParticleDataset(PATH + '/test_sig/')
 
-train_dataset = torch.utils.data.ConcatDataset([train_bkg, train_sig])
-valid_dataset = torch.utils.data.ConcatDataset([valid_bkg, valid_sig])
-test_dataset = torch.utils.data.ConcatDataset([test_bkg, test_sig])
+train_dataset = ConcatDataset([train_bkg, train_sig])
+valid_dataset = ConcatDataset([valid_bkg, valid_sig])
+test_dataset = ConcatDataset([test_bkg, test_sig])
 
 train_loader = DataLoader(dataset=train_dataset, batch_size=128, shuffle=True,
         num_workers=40)
@@ -70,9 +72,9 @@ class GCN(torch.nn.Module):
 
 
 #model = HyperGNN(manifold, 4, 64, 2)#.double()
-#optimizer = RAdam(model.parameters(), lr=0.03, weight_decay=5e-4)
+#optimizer = RAdam(model.parameters(), lr=0.01, weight_decay=5e-4)
 
-model = GCN(3, 64, 2).double()
+model = GCN(4, 64, 2).double()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
 print(model)
 
