@@ -60,8 +60,7 @@ print(model)
 def train():
     model.train()
     avg_loss = []
-    # I CHANGED THIS!!! REMEMEBR TO CHANGE IT BACK TO TRAIN LOADER
-    for data in valid_loader:
+    for data in train_loader:
         out = model(data.x, data.edge_index, data.batch)
         loss = criterion(out, data.y)
         avg_loss.append(loss.detach().numpy())
@@ -97,7 +96,7 @@ def ROC_area(signal_eff, background_eff):
 
 
 wandb.config = {
-    "learning_rate": 0.001,
+    "learning_rate": 0.01,
     "epochs": 5,
     "batch_size": 64,
 }
