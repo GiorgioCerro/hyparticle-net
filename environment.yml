@@ -1,4 +1,4 @@
-name: pyg
+name: hyp_graph
 channels:
   - pytorch
   - rapidsai

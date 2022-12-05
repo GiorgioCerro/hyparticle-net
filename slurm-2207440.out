@@ -1,0 +1,37 @@
+Running SLURM prolog script on pink51.cluster.local
+===============================================================================
+Job started on Mon Dec  5 18:36:41 GMT 2022
+Job ID          : 2207440
+Job name        : trainer
+WorkDir         : /mainfs/scratch/mjad1g20/hyper/hyparticle-net
+Command         : /mainfs/scratch/mjad1g20/hyper/hyparticle-net/submit_trainer.sh
+Partition       : gtx1080
+Num hosts       : 1
+Num cores       : 20
+Num of tasks    : 1
+Hosts allocated : pink51
+Job Output Follows ...
+===============================================================================
+slurmstepd-pink51: error: *** JOB 2207440 ON pink51 CANCELLED AT 2022-12-05T20:36:45 DUE TO TIME LIMIT ***
+slurmstepd-pink51: error: *** JOB 2207440 STEPD TERMINATED ON pink51 AT 2022-12-05T20:40:45 DUE TO JOB NOT ENDING WITH SIGNALS ***
+==============================================================================
+Running epilogue script on pink51.
+
+Submit time  : 2022-12-05T18:36:40
+Start time   : 2022-12-05T18:36:41
+End time     : 2022-12-05T20:36:45
+Elapsed time : 02:00:04 (Timelimit=02:00:00)
+
+Job ID: 2207440
+Cluster: i5
+User/Group: mjad1g20/wf
+State: TIMEOUT (exit code 0)
+Nodes: 1
+Cores per node: 20
+CPU Utilized: 00:00:01
+CPU Efficiency: 0.00% of 1-16:01:20 core-walltime
+Job Wall-clock time: 02:00:04
+Memory Utilized: 283.58 MB
+Memory Efficiency: 0.00% of 0.00 MB
+
+slurmstepd-pink51: error: Container 28408 in cgroup plugin has 1 processes, giving up after 255 sec
