@@ -5,3 +5,12 @@ py.py
 .ipynb_checkpoints/
 testing.ipynb
 visualise.ipynb
+wandb/
+experiments/__pycache__/
+experiments/data/
+experiments/logs/
+experiments/wandb/
+experiments/slurm*
+
+
+
