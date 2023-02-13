@@ -22,13 +22,12 @@ class ParticleDataset(Dataset):
         stack = ExitStack()
         for file in self.__files:
             file_obj = stack.enter_context(HdfReader(path=file))
-            #process = file_obj.read_process(name = self.__process_name)
             try: 
-                process = file_obj.read_process(name = 'signal')
+                process = file_obj['signal']
                 self.__process_name = 'signal'
                 self.label = 1
             except KeyError: 
-                process = file_obj.read_process('background')
+                process = file_obj['background']
                 self.__process_name = 'background'
                 self.label = 0
             ini = self.__ranges[-1][1] + 1
@@ -39,8 +38,6 @@ class ParticleDataset(Dataset):
         _dtype = [('ini', 'i4'), ('fin', 'i4')]
         self.__ranges = np.array(self.__ranges[1:], dtype=_dtype)
         
-        self.algo = ['aKt', 'CA', 'Kt']
-        #self.manifold = PoincareBall()
 
     def __len__(self):
         return self.__ranges['fin'][-1]
@@ -52,18 +49,16 @@ class ParticleDataset(Dataset):
                             np.greater_equal(self.__ranges['fin'], idx)))[0])
 
         _event_idx = idx - self.__ranges[_file_idx]['ini']
-        event_dict = {}
         with HdfReader(path=self.__files[_file_idx]) as hep_file:
-            process = hep_file.read_process(name=self.__process_name)
-            _event = process.read_event(_event_idx)
+            process = hep_file[self.__process_name]
+            _event = process[_event_idx]
 
             k = 0
-            mask = _event.get_custom(self.algo[k] + '_mask')
-            pmu = _event.get_custom(self.algo[k] + '_pmu')[mask]
-            hyp = _event.get_custom(self.algo[k] + '_hyp')[mask]
-            edges = _event.get_custom(self.algo[k] + '_edges')[mask][:-1]
-            #edges = edges.view((edges.dtype[0], len(edges.dtype.names)))
+            mask = _event.masks["final"]
+            pmu = _event.pmu
+            edges = _event.edges
        
+
         G = nx.Graph()
         G.add_edges_from(edges)
         nodes = np.array(G.nodes())
