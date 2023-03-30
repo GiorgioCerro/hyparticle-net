@@ -30,9 +30,11 @@ class GraphClassification(nn.Module):
             conv = GCNConv(args.embed_dim, args.embed_dim, bias=False)
             if args.weight_init and args.weight_init == 'xavier':
                 nn.init.xavier_uniform_(conv.lin.weight.data)
-            self.layers.append(ManifoldConv(conv, manifold, dropout=args.dropout, from_euclidean=i == 0))
+            self.layers.append(ManifoldConv(conv, manifold, 
+                dropout=args.dropout, from_euclidean=i == 0))
 
-        self.centroid_distance = CentroidDistance(args.num_centroid, args.embed_dim, manifold, args.weight_init)
+        self.centroid_distance = CentroidDistance(args.num_centroid, 
+                args.embed_dim, manifold, args.weight_init)
 
         self.output_linear = nn.Linear(args.num_centroid, args.num_class)
         if args.weight_init and args.weight_init == 'xavier':

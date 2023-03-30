@@ -29,6 +29,7 @@ def wandb_cluster_mode():
     key = os.environ.get("WANDB_KEY")
     os.environ['WANDB_API_KEY'] = key 
     os.environ['WANDB_MODE'] = 'offline'
+    #os.environ['WANDB_MODE'] = 'online'
 
 class SyntheticGraphs(InMemoryDataset):
     r"""Synthetic graph dataset from the `"Hyperbolic Graph Neural networks"

@@ -1,64 +1,52 @@
+import wandb
 from torch_geometric.loader import DataLoader
-from torch_geometric.datasets import UPFD
-from torch_geometric.transforms import ToUndirected
-import torch_geometric.transforms as T
-
-
-import os
-import os.path as osp
 
 from hyparticlenet.hgnn.train import train
 from hyparticlenet.hgnn.train import HGNN_CONFIG
-from hyparticlenet.hgnn.util import SyntheticGraphs
+from hyparticlenet.hgnn.util import wandb_cluster_mode
 
-# Jets modules import 
-from hyparticlenet.data_handler import ParticleDataset
-from torch.utils.data import ConcatDataset
-
+from lundnet.pyg_dataset import DGLGraphDatasetLund
 # Modify config
 hp = HGNN_CONFIG
+
 hp.logdir = 'logs'
-hp.best_model_name = 'best_jets_d2_euclidean'
+hp.epochs = 80
+hp.batch_size = 64
+hp.seed = 123
+hp.lr = 0.001
+
 hp.num_class = 2
-hp.in_features = 4
-hp.epochs = 300
-hp.seed = 234
-hp.embed_dim = 2
-hp.manifold = 'euclidean'
+hp.in_features = 5
+hp.embed_dim = 20
+hp.num_centroid = 100
 
 # Jets Data sets
-PATH = '/home/mjad1g20/office_share/giorgio/jet_tagging'
-train_bkg = ParticleDataset(PATH+'/train_bkg/')
-train_sig = ParticleDataset(PATH+'/train_sig/')
-valid_bkg = ParticleDataset(PATH+'/valid_bkg/')
-valid_sig = ParticleDataset(PATH+'/valid_sig/')
-test_bkg = ParticleDataset(PATH+'/test_bkg/')
-test_sig = ParticleDataset(PATH+'/test_sig/')
-train_dataset = ConcatDataset([train_bkg, train_sig])
-valid_dataset = ConcatDataset([valid_bkg, valid_sig])
-test_dataset = ConcatDataset([test_bkg, test_sig])
-train_loader = DataLoader(dataset=train_dataset, batch_size=hp.batch_size, shuffle=True)
-val_loader = DataLoader(dataset=valid_dataset, batch_size=hp.batch_size, shuffle=True)
-test_loader = DataLoader(dataset=test_dataset, batch_size=hp.batch_size, shuffle=True)
+PATH = '/scratch/gc2c20/data/w_tagging/'
 
-# Define data set  
-#dataset_root = 'data/SyntheticGraphs'
-#transform = T.Compose((
-#    T.ToUndirected(),
-#    T.OneHotDegree(hp.in_features - 1, cat=False)
-#))
-#train_dataset = SyntheticGraphs(dataset_root, split='train', transform=transform, node_num=(hp.node_num_min, hp.node_num_max), num_train=hp.num_train, num_val=hp.num_val,  num_test=hp.num_test)
-#val_dataset = SyntheticGraphs(dataset_root, split='val', transform=transform, node_num=(hp.node_num_min, hp.node_num_max), num_train=hp.num_train, num_val=hp.num_val, num_test=hp.num_test)
-#
-#train_loader = DataLoader(train_dataset, batch_size=hp.batch_size, shuffle=True, drop_last=False)
-#val_loader = DataLoader(val_dataset, batch_size=hp.batch_size, shuffle=False, drop_last=False)
+train_dataset = DGLGraphDatasetLund(PATH+'/train_bkg/', PATH+'/train_sig/', 
+                                        nev=-1, n_sample=500000)
+valid_dataset = DGLGraphDatasetLund(PATH+'/valid_bkg/', PATH+'/valid_sig/', 
+                                        nev=-1, n_sample=50000)
 
 
+train_loader = DataLoader(dataset=train_dataset, batch_size=hp.batch_size, 
+        shuffle=True)#, num_workers=10)
+val_loader = DataLoader(dataset=valid_dataset, batch_size=hp.batch_size) 
 
-# Train
-train(
-    train_loader,
-    val_loader,
-    args=hp
-    )
+
+wandb_cluster_mode()
+
+# Training the poincare manifold
+print('Training the poincare manifold')
+hp.manifold = 'poincare'
+hp.best_model_name = 'best_jets_' + hp.manifold
+with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
+    train(train_loader, val_loader, args=hp)
+
+# Training the euclidean manifold
+print('Training with the euclidean manifold')
+hp.manifold = 'euclidean'
+hp.best_model_name = 'best_jets_' + hp.manifold
+with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
+    train(train_loader, val_loader, args=hp)
 
