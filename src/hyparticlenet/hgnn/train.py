@@ -12,6 +12,7 @@ from sklearn.metrics import roc_curve, accuracy_score
 from hyparticlenet.hgnn.models.graph_classification import GraphClassification
 from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
 from hyparticlenet.hgnn.util import wandb_cluster_mode
+from hyparticlenet.hgnn.optimizer.radam import RiemannianAdam 
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
@@ -89,7 +90,16 @@ def train(
 
 
     # And optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
+    if args.optimizer == 'radam':
+        print('Using Riemannian Adam optimizer')
+        optimizer = RiemannianAdam(model.parameters(), lr=args.lr)
+    elif args.optimizer == 'sgd':
+        print('Using SGD optimizer')
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
+            weight_decay=args.weight_decay, momentum=0.9)
+    else:
+        print('Using standard Adam optimizer')
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
             amsgrad=args.optimizer == 'amsgrad', weight_decay=args.weight_decay)
     lr_steps = [60, 70]
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, 
@@ -131,12 +141,13 @@ def train(
 
         # compute valid accuracy
         train_acc = evaluate(args, model, train_loader)
-        val_acc, val_auc = evaluate(args, model, val_loader, return_auc=True)
+        val_acc, val_loss, val_auc = evaluate(args, model, val_loader, 
+                                            return_auc=True)
         # compute training accuracy and training loss
         train_loss = total_loss / len(train_loader)
         epoch_time = time.time() - init
         pprint(
-                f'Epoch {epoch:n} - train loss {train_loss:.3f}, train acc. {train_acc:.3f}, valid acc. {val_acc:.3f}, valid auc {val_auc:.3f}, time {epoch_time:.3f}'
+                f'Epoch {epoch:n} - train loss {train_loss:.3f}, train acc. {train_acc:.5f}, valid acc. {val_acc:.5f}, valid auc {val_auc:.3f}, time {epoch_time:.3f}'
         )
 
         
@@ -151,6 +162,7 @@ def train(
             'epoch': epoch,
             'validation_auc': val_auc,
             'validation_accuracy': val_acc,
+            'validation_loss': val_loss,
             'training_accuracy': train_acc,
             'training_loss': train_loss,
             })
@@ -159,6 +171,8 @@ def train(
 def evaluate(args, model, data_loader, return_auc=None):
     """Evaluate the model and return accuracy and AUC.
     """
+    loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
+    loss_temp = 0
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     soft = torch.nn.Softmax(dim=1)
     model.eval()
@@ -168,10 +182,14 @@ def evaluate(args, model, data_loader, return_auc=None):
         c = 0 
         for data in data_loader:
             data = data.to(device)
-            pred = soft(model(data))[:, 1]
+            out = model(data)
+            pred = soft(out)[:, 1]
             scores[args.batch_size * c : args.batch_size * (c+1)] = pred.cpu()
             target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
             c+=1
+
+            loss = loss_function(out, data.y)
+            loss_temp += loss.item() * data.num_graphs
 
     labels = (scores >= 0.5).astype(int)
     accuracy = accuracy_score(target, labels)
@@ -182,7 +200,7 @@ def evaluate(args, model, data_loader, return_auc=None):
     auc = ROC_area(eff_s, eff_b)
 
     if return_auc:
-        return accuracy, auc
+        return accuracy, loss_temp / len(data_loader), auc
     else:
         return accuracy
 

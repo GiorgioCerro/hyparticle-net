@@ -1,5 +1,6 @@
 import abc
 import torch
+from torch import Tensor
 from torch.autograd import Function
 
 from hyparticlenet.hgnn.nn.poincare_distance import PoincareDistance
@@ -109,6 +110,114 @@ class PoincareBallManifold(Manifold):
         return super().parallel_transport(v, x)
 
 
+    ########### ADDING STUFF FOR THE OPTIMIZER #############
+    
+    def mobius_addition(self, v1: Tensor, v2: Tensor) -> Tensor:
+        '''Addition between two vectors in the manifold.
+        '''
+        norm_v1 = torch.linalg.norm(v1, dim=-1, keepdim=True) ** 2.
+        norm_v2 = torch.linalg.norm(v2, dim=-1, keepdim=True) ** 2.
+        v1v2 = (v1 * v2).sum(dim=-1, keepdim=True)
+        
+        numerator = (1. + 2.*v1v2 + norm_v2) * v1 + (1. - norm_v1)*v2
+        denominator = 1. + 2.*v1v2 + norm_v1*norm_v2
+        addition = numerator / denominator.clamp_min(self.EPS)
+        return addition
+
+
+    def _lambda_x(self, x: Tensor, keepdim: bool = False) -> Tensor:
+        '''Return the conformal factor
+        '''
+        x_sqnorm = x.pow(2).sum(dim=-1, keepdim=keepdim)
+        return 2 / (1 + x_sqnorm).clamp_min(self.EPS)
+
+
+    def egrad2rgrad(self, p: Tensor, dp: Tensor) -> Tensor:
+        '''Translate Euclidean gradient to Riemannian gradient
+        on tangent space
+        '''
+        return dp / self._lambda_x(p, keepdim=True) ** 2
+
+
+    def inner(self, x: Tensor, u: Tensor, v=None, keepdim:bool=True) -> Tensor:
+        '''Inner product
+        '''
+        if v is None:
+            v = u
+        lambda_x = self._lambda_x(x, keepdim=True)
+        inn = lambda_x ** 2. * (u * v).sum(dim=-1, keepdim=True)
+        return inn
+
+    def proj(self, vectors: Tensor, threshold=None) -> Tensor:
+        '''Projection onto the PoincareBall manifold.
+        Clip vectors to have a norm of less than one.
+        '''
+        thresh = 1.0 - self.EPS
+        if threshold:
+            thresh = threshold 
+        one_d = len(vectors.shape) == 1 
+        if one_d:
+            norm = torch.linalg.norm(vectors)
+            if norm < thresh:
+                return vectors
+            else:
+                return thresh * vectors / norm
+        else:
+            norms = torch.linalg.norm(vectors,axis=1)
+            if (norms < thresh).all():
+                return vectors
+            else:
+              vectors_ = torch.clone(vectors) 
+              vectors_[norms >= thresh] = vectors_[norms >= thresh] *  \
+                  (thresh / norms[norms >= thresh])[:,None]
+              vectors = vectors_
+              return vectors
+
+    
+    def expmap(self, vector: Tensor, base_point=None) -> Tensor:
+        '''Compute the Riemann exponential of a tangent vector.
+        '''
+        if base_point is None:
+              base_point = torch.zeros_like(vector)
+
+        factor = self._lambda_x(base_point, keepdim=True)#.view(-1, 1) : Tensor
+        norm_vector = torch.linalg.norm(vector, dim=-1,
+                                  keepdim=True).clamp_min(self.EPS)
+        tn = torch.tanh(factor * norm_vector / 2.) * vector / norm_vector
+        exp = self.mobius_addition(base_point,tn)
+        return exp
+
+    def logmap(self, vector: Tensor, base_point=None) -> Tensor:
+        '''Compute the logarithmic map on the manifold.
+        '''
+        if base_point is None:
+          base_point = torch.zeros_like(vector)
+
+        factor = self._lambda_x(base_point, keepdim=True)
+        mobius_sum = self.mobius_addition(-base_point,vector) 
+        norm_sum = torch.linalg.norm( 
+          mobius_sum, axis=-1, keepdim=True)
+        norm_sum = torch.clamp(norm_sum, self.EPS, 1 - self.EPS)
+
+        log = torch.arctanh(norm_sum) * mobius_sum / norm_sum 
+        log *= (2. / factor)
+        return log
+
+    def ptransp(self, vec: Tensor, point_b: Tensor, point_a=None) -> Tensor:
+        '''Parallel transport of a vector from a starting point to
+        an end point.
+        '''
+        if point_a is None:
+            point_a = torch.zeros_like(vec)
+
+        exp = self.expmap(vec, point_a)
+        mobius_sum = self.mobius_addition(point_b, exp)
+        transported_vec = self.logmap(mobius_sum, point_b)
+        return transported_vec
+
+
+
+
 class LorentzManifold(Manifold):
 
     def __init__(self, EPS=1e-3, max_norm=1e3, norm_clip=1):
@@ -164,6 +273,9 @@ class LorentzManifold(Manifold):
 
     def parallel_transport(self, v, x):
         return super().parallel_transport(v, x)
+    
+
+
 
 class LorentzScalarProduct(Function):
     @staticmethod
