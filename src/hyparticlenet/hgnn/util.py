@@ -31,98 +31,63 @@ def wandb_cluster_mode():
     os.environ['WANDB_MODE'] = 'offline'
     #os.environ['WANDB_MODE'] = 'online'
 
-class SyntheticGraphs(InMemoryDataset):
-    r"""Synthetic graph dataset from the `"Hyperbolic Graph Neural networks"
-    <https://arxiv.org/pdf/1910.12892.pdf>` paper, containing graphs generated with
-    Erdos-Renyi, Watts-Strogatz, and Barabasi-Albert graph generation algorithms.
-    Each graph is labelled with the algorithm that was used to generate the graph (0, 1, 2)
-    and contains 100-500 nodes by default.
-    Args:
-        root (str): Root folder of the dataset.
-        split (str, optional): Whether to use the train, val, or test split.
-            (default: 'train') 
-        node_num (tuple, optional): The range used to determine the number of nodes in each graph.
-            (default: :obj:`(100, 200)`)
-        num_train (int, optional): The number of graphs in the train set.
-            (default: 2000)
-        num_val (int, optional): The number of graphs in the validation set.
-            (default: 2000)
-        num_test (int, optional): The number of graphs in the test set.
-            (default: 2000)
-        transform (callable, optional): A function/transform that takes in an
-            :obj:`torch_geometric.data.Data` object and returns a transformed
-            version. The data object will be transformed before every access.
-            (default: :obj:`None`)
-        pre_transform (callable, optional):  A function/transform that takes in an
-            :obj:`torch_geometric.data.Data` object and returns a transformed
-            version. The data object will be transformed during processing.
-            (default: :obj:`None`)
-        pre_filter (callable, optional):  A function/transform that takes in an
-            :obj:`torch_geometric.data.Data` object and returns a filtered
-            version. The data object will be filtered during processing.
-            (default: :obj:`None`)
-    """
 
-    def __init__(self, root, split='train',
-                 node_num=(100, 500), num_train=2000, num_val=2000, num_test=2000,
-                 transform=None, pre_transform=None, pre_filter=None):
-        self.node_num = node_num
-        self.num_train = num_train
-        self.num_val = num_val
-        self.num_test = num_test
-        super(SyntheticGraphs, self).__init__(root, transform, pre_transform, pre_filter)
-        if split == 'train':
-            path = self.processed_paths[0]
-        elif split == 'val':
-            path = self.processed_paths[1]
-        else:
-            path = self.processed_paths[2]
-        self.data, self.slices = torch.load(path)
+def sqdist(x, y):
+    sq_norm_x = torch.norm(x, dim=-1) ** 2.
+    sq_norm_y = torch.norm(y, dim=-1) ** 2.
+    sq_norm_xy = torch.norm(x - y, dim=-1) ** 2.
 
-    @property
-    def raw_file_names(self):
-        return ['train.pt', 'val.pt', 'test.pt']
-
-    @property
-    def processed_file_names(self):
-        return ['train.pt', 'val.pt', 'test.pt']
-
-    def download(self):
-        return
-
-    def process(self):
-        pprint("Train")
-        torch.save(self.generate_graphs(self.num_train), self.processed_paths[0])
-        pprint("Validation")
-        torch.save(self.generate_graphs(self.num_val), self.processed_paths[1])
-        pprint("Test")
-        torch.save(self.generate_graphs(self.num_test), self.processed_paths[2])
-
-    def generate_graphs(self, num_graphs):
-        data_list = []
-        for i in track(range(num_graphs), description='[red]Generating graphs: erdos_renyi'):
-            num_node = np.random.randint(*self.node_num)
-            graph = from_networkx(nx.erdos_renyi_graph(num_node, np.random.uniform(0.1, 1)))
-            graph.y = 0
-            data_list.append(graph)
-
-        for i in track(range(num_graphs), description='[green]Generating graphs: small_world'):
-            num_node = np.random.randint(*self.node_num)
-            graph = from_networkx(nx.watts_strogatz_graph(num_node, np.random.randint(low=2, high=100), np.random.uniform(0.1, 1)))
-            graph.y = 1
-            data_list.append(graph)
+    cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
+    cosh_angle.clamp_min_(1 + 1e-8)
+    dist = torch.arccosh(cosh_angle)
+    return dist
 
 
-        for i in track(range(num_graphs), description='[cyan]Generating graphs: barabasi_albert'):
-            num_node = np.random.randint(*self.node_num)
-            graph = from_networkx(nx.barabasi_albert_graph(num_node, np.random.randint(low=2, high=100)))
-            graph.y = 2
-            data_list.append(graph)
+def distance_matrix(nodes):
+    length = len(nodes)
+    matrix = torch.zeros((length, length))
+    for n_idx in range(length):
+        nd = nodes[n_idx][None, :]
+        matrix[n_idx] = sqdist(nd, nodes) + 1e-8
+        
+    return matrix
 
-        if self.pre_filter is not None:
-            data_list = [d for d in data_list if self.pre_filter(d)]
 
-        if self.pre_transform is not None:
-            data_list = [self.pre_transform(d) for d in data_list]
+def MeanAveragePrecision(batch, embedding):
+    '''Get the mean average precision for all the different graphs.
+    '''
+    losses = []
+    for batch_idx in range(len(batch.y)):
+        data = batch[batch_idx]
+        hyp = embedding[batch.batch == batch_idx]
+        nodes = torch.tensor(range(data.x.shape[0]))
+        edges = data.edge_index
+        distances = distance_matrix(hyp)
+        mAP = 0
 
-        return self.collate(data_list)
+        for node in nodes:
+            # get the neighbours of a node
+            neighbours = edges[1][ edges[0] == node]
+            temp_mAP = 0
+            for neigh in neighbours:
+                # define the circle's radius
+                radius = distances[node][neigh]
+
+                # find all the nodes within the circle
+                radius_mask = distances[node] <= radius
+                # remove self loop
+                radius_mask[node] = False
+                nodes_in_circle = nodes[radius_mask]
+                # count how manyy should be there
+                combined = torch.cat((neighbours, nodes_in_circle))
+                uniques, counts = combined.unique(return_counts=True)
+                intersection = uniques[counts > 1]
+                temp_mAP  += len(intersection) / len(nodes_in_circle)
+
+            mAP += temp_mAP / len(neighbours) 
+
+        mAP /= len(nodes)
+        losses.append(mAP)
+    
+    loss = torch.mean(torch.tensor(losses))
+    return loss
