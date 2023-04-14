@@ -32,35 +32,44 @@ def wandb_cluster_mode():
     #os.environ['WANDB_MODE'] = 'online'
 
 
-def sqdist(x, y):
-    sq_norm_x = torch.norm(x, dim=-1) ** 2.
-    sq_norm_y = torch.norm(y, dim=-1) ** 2.
-    sq_norm_xy = torch.norm(x - y, dim=-1) ** 2.
-
-    cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
-    cosh_angle.clamp_min_(1 + 1e-8)
-    dist = torch.arccosh(cosh_angle)
-    return dist
-
+#def sqdist(x, y):
+#    sq_norm_x = torch.norm(x, dim=-1) ** 2.
+#    sq_norm_y = torch.norm(y, dim=-1) ** 2.
+#    sq_norm_xy = torch.norm(x - y, dim=-1) ** 2.
+#
+#    cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
+#    cosh_angle.clamp_min_(1 + 1e-8)
+#    dist = torch.arccosh(cosh_angle)
+#    return dist
+#
+#
+#def distance_matrix(nodes):
+#    length = len(nodes)
+#    matrix = torch.zeros((length, length))
+#    for n_idx in range(length):
+#        nd = nodes[n_idx][None, :]
+#        matrix[n_idx] = sqdist(nd, nodes) + 1e-8
+#        
+#    return matrix
 
 def distance_matrix(nodes):
-    length = len(nodes)
-    matrix = torch.zeros((length, length))
-    for n_idx in range(length):
-        nd = nodes[n_idx][None, :]
-        matrix[n_idx] = sqdist(nd, nodes) + 1e-8
-        
-    return matrix
+    sq_norms = torch.sum(nodes ** 2, dim=-1, keepdim=True)
+    sq_dists = sq_norms + sq_norms.transpose(0, 1) - 2 * nodes @ nodes.transpose(0, 1)
+    cosh_angle = 1 + 2 * sq_dists / ((1 - sq_norms) * (1 - sq_norms.transpose(0, 1)))
+    cosh_angle.clamp_min_(1 + 1e-8)
+    dist = torch.arccosh(cosh_angle)
+    return dist + 1e-8
 
 
-def MeanAveragePrecision(batch, embedding):
+
+def MeanAveragePrecision(batch, embedding, device=torch.device('cpu')):
     '''Get the mean average precision for all the different graphs.
     '''
     losses = []
     for batch_idx in range(len(batch.y)):
         data = batch[batch_idx]
-        hyp = embedding[batch.batch == batch_idx]
-        nodes = torch.tensor(range(data.x.shape[0]))
+        hyp = embedding[batch.batch == batch_idx].to(device)
+        nodes = torch.tensor(range(data.x.shape[0]), device=device)
         edges = data.edge_index
         distances = distance_matrix(hyp)
         mAP = 0
@@ -90,4 +99,4 @@ def MeanAveragePrecision(batch, embedding):
         losses.append(mAP)
     
     loss = torch.mean(torch.tensor(losses))
-    return loss
+    return - loss

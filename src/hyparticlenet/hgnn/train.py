@@ -115,11 +115,12 @@ def train(
         total_loss, total_l1, total_l2 = 0, 0, 0
         init = time.time()
         for data in train_loader:
+            batch_time = time.time()
             model.zero_grad()
             data = data.to(device)
             embedding, out = model(data)
 
-            l1 = torch.tensor(0)#- MeanAveragePrecision(data, embedding)
+            l1 = MeanAveragePrecision(data, embedding, device)
             l2 = loss_function(out, data.y)
             loss = args.alpha * l1 + (1 - args.alpha) * l2
 
@@ -130,7 +131,7 @@ def train(
 
             total_loss += loss.item() * data.num_graphs
             total_l1 += l1.item() * data.num_graphs
-            total_l2 += l2.item()
+            total_l2 += l2.item() * data.num_graphs
             optimizer.step()
 
    
@@ -146,6 +147,7 @@ def train(
         epoch_time = time.time() - init
         pprint(f'Epoch {epoch:n}, time {epoch_time:.3f}')
         pprint(f'Train loss {train_loss:.5f}, train acc. {train_acc:.5f}')
+        pprint(f'MeanAveragePrecision {train_l1:.5f}, CrossEntropyLoss {train_l2:.5f}')
         pprint(f'Valid acc. {val_acc:.5f}, valid auc {val_auc:.5f}')
         pprint(20*'~')
 
@@ -188,7 +190,7 @@ def evaluate(args, model, data_loader, return_auc=None):
             target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
             c+=1
 
-            l1_temp = torch.tensor(0)#MeanAveragePrecision(data, embedding)
+            l1_temp = MeanAveragePrecision(data, embedding, device)
             l2_temp = loss_function(out, data.y)
             _loss = l1_temp + l2_temp
             loss_temp += _loss.item() * data.num_graphs
