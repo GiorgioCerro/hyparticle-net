@@ -1,14 +1,8 @@
 import torch
 
-import os.path as osp
 import torch
-from torch_geometric.utils import from_networkx, degree
-from torch_geometric.data import InMemoryDataset
+from torch_geometric.utils import to_dense_adj
 
-import numpy as np
-import networkx as nx
-from rich.progress import track
-from rich.pretty import pprint
 
 def dot(a, b):
     return torch.bmm(a.unsqueeze(-2), b.unsqueeze(-1)).squeeze(-1)
@@ -32,34 +26,14 @@ def wandb_cluster_mode():
     #os.environ['WANDB_MODE'] = 'online'
 
 
-#def sqdist(x, y):
-#    sq_norm_x = torch.norm(x, dim=-1) ** 2.
-#    sq_norm_y = torch.norm(y, dim=-1) ** 2.
-#    sq_norm_xy = torch.norm(x - y, dim=-1) ** 2.
-#
-#    cosh_angle = 1 + 2 * sq_norm_xy / ((1 - sq_norm_x) * (1 - sq_norm_y))
-#    cosh_angle.clamp_min_(1 + 1e-8)
-#    dist = torch.arccosh(cosh_angle)
-#    return dist
-#
-#
-#def distance_matrix(nodes):
-#    length = len(nodes)
-#    matrix = torch.zeros((length, length))
-#    for n_idx in range(length):
-#        nd = nodes[n_idx][None, :]
-#        matrix[n_idx] = sqdist(nd, nodes) + 1e-8
-#        
-#    return matrix
-
 def distance_matrix(nodes):
     sq_norms = torch.sum(nodes ** 2, dim=-1, keepdim=True)
     sq_dists = sq_norms + sq_norms.transpose(0, 1) - 2 * nodes @ nodes.transpose(0, 1)
     cosh_angle = 1 + 2 * sq_dists / ((1 - sq_norms) * (1 - sq_norms.transpose(0, 1)))
     cosh_angle.clamp_min_(1 + 1e-8)
-    dist = torch.arccosh(cosh_angle)
-    return dist + 1e-8
-
+    dist = torch.arccosh(cosh_angle) + 1e-8
+    dist.fill_diagonal_(1e-8)
+    return dist
 
 
 def MeanAveragePrecision(batch, embedding, device=torch.device('cpu')):
@@ -67,36 +41,22 @@ def MeanAveragePrecision(batch, embedding, device=torch.device('cpu')):
     '''
     losses = []
     for batch_idx in range(len(batch.y)):
-        data = batch[batch_idx]
+        graph = batch[batch_idx]
         hyp = embedding[batch.batch == batch_idx].to(device)
-        nodes = torch.tensor(range(data.x.shape[0]), device=device)
-        edges = data.edge_index
-        distances = distance_matrix(hyp)
-        mAP = 0
-
-        for node in nodes:
-            # get the neighbours of a node
-            neighbours = edges[1][ edges[0] == node]
-            temp_mAP = 0
-            for neigh in neighbours:
-                # define the circle's radius
-                radius = distances[node][neigh]
-
-                # find all the nodes within the circle
-                radius_mask = distances[node] <= radius
-                # remove self loop
-                radius_mask[node] = False
-                nodes_in_circle = nodes[radius_mask]
-                # count how manyy should be there
-                combined = torch.cat((neighbours, nodes_in_circle))
-                uniques, counts = combined.unique(return_counts=True)
-                intersection = uniques[counts > 1]
-                temp_mAP  += len(intersection) / len(nodes_in_circle)
-
-            mAP += temp_mAP / len(neighbours) 
-
-        mAP /= len(nodes)
-        losses.append(mAP)
     
-    loss = torch.mean(torch.tensor(losses))
-    return - loss
+        _dist = distance_matrix(hyp)
+        radius = _dist[graph.edge_index[0], graph.edge_index[1]]
+        distances = _dist[graph.edge_index[0]]
+
+        nodes_in_circle = distances <= radius.unsqueeze(-1)
+        adj = to_dense_adj(graph.edge_index)[0]
+        neighbours = adj[graph.edge_index[0]]
+
+        num = (nodes_in_circle * neighbours).sum(1)
+        # -1 for excluding self-loops
+        den = (nodes_in_circle.sum(1) - 1) * neighbours.sum(1)
+
+        mAP = torch.sum(num / den) / graph.num_nodes
+        losses.append(mAP)
+
+    return - torch.mean(torch.tensor(losses))

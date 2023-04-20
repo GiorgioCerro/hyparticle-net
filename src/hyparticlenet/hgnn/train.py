@@ -32,7 +32,7 @@ HGNN_CONFIG = {
     'optimizer': 'adam',
     'lr': 0.001,
     'weight_decay': 0,
-    'grad_clip': 1,
+    'grad_clip': 1 - 1e-8,
     'dropout': 0,
     'batch_size': 32,
     'epochs': 30,
@@ -97,6 +97,7 @@ def train(
             milestones=lr_steps, gamma=0.1)
 
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
+    soft = torch.nn.Softmax(dim=1)
 
     #Start Wandb
     #wandb_cluster_mode()
@@ -114,8 +115,10 @@ def train(
 
         total_loss, total_l1, total_l2 = 0, 0, 0
         init = time.time()
+        training_scores = torch.zeros(len(train_loader.dataset))
+        training_target = torch.zeros(len(train_loader.dataset), dtype=int)
+        c = 0 
         for data in train_loader:
-            batch_time = time.time()
             model.zero_grad()
             data = data.to(device)
             embedding, out = model(data)
@@ -126,6 +129,12 @@ def train(
 
             loss.backward(retain_graph=True)
 
+            # computing accuracy
+            pred = soft(out)[:, 1]
+            training_scores[args.batch_size * c : args.batch_size * (c+1)] = pred.cpu()
+            training_target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
+            c+=1
+
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
@@ -134,12 +143,13 @@ def train(
             total_l2 += l2.item() * data.num_graphs
             optimizer.step()
 
-   
         scheduler.step()
 
+        training_labels = (training_scores >= 0.5).to(int)
+        train_acc = accuracy_score(training_target, training_labels)
+    
         # compute valid accuracy
-        train_acc = evaluate(args, model, train_loader)
-        val_acc, val_loss, val_auc = evaluate(args, model, val_loader, return_auc=True)
+        val_acc, val_loss, val_auc = evaluate(args, model, val_loader)
         # compute training accuracy and training loss
         train_loss = total_loss / len(train_loader)
         train_l1 = total_l1 / len(train_loader)
@@ -170,7 +180,7 @@ def train(
             })
     
 
-def evaluate(args, model, data_loader, return_auc=None):
+def evaluate(args, model, data_loader):
     """Evaluate the model and return accuracy and AUC.
     """
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
@@ -203,10 +213,7 @@ def evaluate(args, model, data_loader, return_auc=None):
     eff_b = 1 - fpr
     auc = ROC_area(eff_s, eff_b)
 
-    if return_auc:
-        return accuracy, loss_temp / len(data_loader), auc
-    else:
-        return accuracy
+    return accuracy, loss_temp / len(data_loader), auc
 
 
 def ROC_area(signal_eff, background_eff):
