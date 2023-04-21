@@ -88,7 +88,6 @@ class RiemannianAdam(OptimMixin, torch.optim.Adam):
                         - step_size * direction, point))
                     exp_avg_new = manifold.ptransp(exp_avg, new_point,
                         point)
-
                     # use copy only for user facing point
                     point.copy_(new_point)
                     exp_avg.copy_(exp_avg_new)

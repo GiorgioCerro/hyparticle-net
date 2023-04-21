@@ -11,8 +11,7 @@ from sklearn.metrics import roc_curve, accuracy_score
 
 from hyparticlenet.hgnn.models.graph_classification import GraphClassification
 from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
-from hyparticlenet.hgnn.util import wandb_cluster_mode
-from hyparticlenet.hgnn.optimizer.radam import RiemannianAdam 
+from hyparticlenet.hgnn.util import wandb_cluster_mode, MeanAveragePrecision
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
@@ -22,7 +21,7 @@ from tqdm import tqdm
 
 HGNN_CONFIG = {
     # Hyperbolic GNN parameters
-    'in_features': 1000,
+    'in_features': 5,
     'embed_dim': 5,
     'num_layers': 5,
     'num_class': 3,
@@ -33,10 +32,11 @@ HGNN_CONFIG = {
     'optimizer': 'adam',
     'lr': 0.001,
     'weight_decay': 0,
-    'grad_clip': 1,
+    'grad_clip': 1 - 1e-8,
     'dropout': 0,
     'batch_size': 32,
     'epochs': 30,
+    'alpha': 0.5, # loss weight
     'weight_init': 'xavier', # other option 'default' or empty
     'seed': 123,
     'device': 'cpu',
@@ -90,22 +90,14 @@ def train(
 
 
     # And optimizer
-    if args.optimizer == 'radam':
-        print('Using Riemannian Adam optimizer')
-        optimizer = RiemannianAdam(model.parameters(), lr=args.lr)
-    elif args.optimizer == 'sgd':
-        print('Using SGD optimizer')
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
-            weight_decay=args.weight_decay, momentum=0.9)
-    else:
-        print('Using standard Adam optimizer')
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
             amsgrad=args.optimizer == 'amsgrad', weight_decay=args.weight_decay)
     lr_steps = [60, 70]
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, 
             milestones=lr_steps, gamma=0.1)
 
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
+    soft = torch.nn.Softmax(dim=1)
 
     #Start Wandb
     #wandb_cluster_mode()
@@ -121,34 +113,53 @@ def train(
             description="[cyan]{} Training epoch".format(experiment_name)):
         model.train()
 
-        total_loss = 0
+        total_loss, total_l1, total_l2 = 0, 0, 0
         init = time.time()
+        training_scores = torch.zeros(len(train_loader.dataset))
+        training_target = torch.zeros(len(train_loader.dataset), dtype=int)
+        c = 0 
         for data in train_loader:
             model.zero_grad()
             data = data.to(device)
-            out = model(data)
-            loss = loss_function(out, data.y)
+            embedding, out = model(data)
+
+            l1 = MeanAveragePrecision(data, embedding, device)
+            l2 = loss_function(out, data.y)
+            loss = args.alpha * l1 + (1 - args.alpha) * l2
+
             loss.backward(retain_graph=True)
+
+            # computing accuracy
+            pred = soft(out)[:, 1]
+            training_scores[args.batch_size * c : args.batch_size * (c+1)] = pred.cpu()
+            training_target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
+            c+=1
 
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             total_loss += loss.item() * data.num_graphs
+            total_l1 += l1.item() * data.num_graphs
+            total_l2 += l2.item() * data.num_graphs
             optimizer.step()
 
-   
         scheduler.step()
 
+        training_labels = (training_scores >= 0.5).to(int)
+        train_acc = accuracy_score(training_target, training_labels)
+    
         # compute valid accuracy
-        train_acc = evaluate(args, model, train_loader)
-        val_acc, val_loss, val_auc = evaluate(args, model, val_loader, 
-                                            return_auc=True)
+        val_acc, val_loss, val_auc = evaluate(args, model, val_loader)
         # compute training accuracy and training loss
         train_loss = total_loss / len(train_loader)
+        train_l1 = total_l1 / len(train_loader)
+        train_l2 = total_l2 / len(train_loader)
         epoch_time = time.time() - init
-        pprint(
-                f'Epoch {epoch:n} - train loss {train_loss:.3f}, train acc. {train_acc:.5f}, valid acc. {val_acc:.5f}, valid auc {val_auc:.3f}, time {epoch_time:.3f}'
-        )
+        pprint(f'Epoch {epoch:n}, time {epoch_time:.3f}')
+        pprint(f'Train loss {train_loss:.5f}, train acc. {train_acc:.5f}')
+        pprint(f'MeanAveragePrecision {train_l1:.5f}, CrossEntropyLoss {train_l2:.5f}')
+        pprint(f'Valid acc. {val_acc:.5f}, valid auc {val_auc:.5f}')
+        pprint(20*'~')
 
         
         if val_acc > best_accuracy:
@@ -159,37 +170,40 @@ def train(
         
         # Log to wandb
         wandb.log({
-            'epoch': epoch,
             'validation_auc': val_auc,
             'validation_accuracy': val_acc,
-            'validation_loss': val_loss,
             'training_accuracy': train_acc,
+            'validation_loss': val_loss,
             'training_loss': train_loss,
+            'mean_average_precision': train_l1,
+            'cross_entropy_loss': train_l2,
             })
     
 
-def evaluate(args, model, data_loader, return_auc=None):
+def evaluate(args, model, data_loader):
     """Evaluate the model and return accuracy and AUC.
     """
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
-    loss_temp = 0
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     soft = torch.nn.Softmax(dim=1)
     model.eval()
+    loss_temp = 0
     with torch.no_grad():
         scores = np.zeros(len(data_loader.dataset))
         target = np.zeros(len(data_loader.dataset), dtype=int)
         c = 0 
         for data in data_loader:
             data = data.to(device)
-            out = model(data)
+            embedding, out = model(data)
             pred = soft(out)[:, 1]
             scores[args.batch_size * c : args.batch_size * (c+1)] = pred.cpu()
             target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
             c+=1
 
-            loss = loss_function(out, data.y)
-            loss_temp += loss.item() * data.num_graphs
+            l1_temp = MeanAveragePrecision(data, embedding, device)
+            l2_temp = loss_function(out, data.y)
+            _loss = l1_temp + l2_temp
+            loss_temp += _loss.item() * data.num_graphs
 
     labels = (scores >= 0.5).astype(int)
     accuracy = accuracy_score(target, labels)
@@ -199,10 +213,7 @@ def evaluate(args, model, data_loader, return_auc=None):
     eff_b = 1 - fpr
     auc = ROC_area(eff_s, eff_b)
 
-    if return_auc:
-        return accuracy, loss_temp / len(data_loader), auc
-    else:
-        return accuracy
+    return accuracy, loss_temp / len(data_loader), auc
 
 
 def ROC_area(signal_eff, background_eff):

@@ -24,12 +24,15 @@ class GraphClassification(nn.Module):
         self.embedding = nn.Linear(args.in_features, args.embed_dim, bias=False)
         if args.weight_init and args.weight_init == 'xavier':
             nn.init.xavier_uniform_(self.embedding.weight.data)
+            self.embedding.weight.data /= 2 * self.embedding.weight.norm(dim=1, keepdim=True)
 
         self.layers = torch.nn.ModuleList()
         for i in range(args.num_layers):
             conv = GCNConv(args.embed_dim, args.embed_dim, bias=False)
             if args.weight_init and args.weight_init == 'xavier':
                 nn.init.xavier_uniform_(conv.lin.weight.data)
+                conv.lin.weight.data /= 2 * conv.lin.weight.norm(dim=1, keepdim=True)
+
             self.layers.append(ManifoldConv(conv, manifold, 
                 dropout=args.dropout, from_euclidean=i == 0))
 
@@ -40,7 +43,8 @@ class GraphClassification(nn.Module):
         if args.weight_init and args.weight_init == 'xavier':
             nn.init.xavier_uniform_(self.output_linear.weight.data)
             nn.init.uniform_(self.output_linear.bias.data, -1e-4, 1e-4)
-
+            # normalise to less than 1
+            self.output_linear.weight.data /= 2 * self.output_linear.weight.norm(dim=1, keepdim=True)
 
     def forward(self, data):
         x = self.embedding(data.x)

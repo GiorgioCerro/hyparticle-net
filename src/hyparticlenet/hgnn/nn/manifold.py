@@ -106,10 +106,72 @@ class PoincareBallManifold(Manifold):
         norm_v = torch.linalg.norm(v, dim=-1, keepdim=True)
         return self.mobius_add(x, torch.tanh(lambda_x * norm_v / 2) * (v / norm_v))
 
-    def parallel_transport(self, v, x):
-        return super().parallel_transport(v, x)
+
+    def lambda_x(self, x):
+        return 2. / (1 - self.th_dot(x, x))
+
+    def th_norm(self, x, dim=-1):
+	    return torch.norm(x, 2, dim, keepdim=True)
 
 
+    def mob_add(self, x, y):
+        y = y + self.EPS
+        x_dot_y = self.th_dot(x, y)
+        x_norm_squared = self.th_dot(x, x)
+        y_norm_squared = self.th_dot(y, y)
+        numerator = (1 + 2 * x_dot_y + y_norm_squared) * x + (1 - x_norm_squared) * y
+        denominator = 1 + 2 * x_dot_y + x_norm_squared * y_norm_squared + self.EPS
+        return self.normalize(numerator / denominator)
+
+
+    def exp_map_x(self, x, v):
+        """
+        Exp map from tangent space of x to hyperbolic space
+        """
+        v = v + self.EPS # Perturbe v to avoid dealing with v = 0
+        norm_v = self.th_norm(v)
+        second_term = (torch.nn.Tanh()(self.lambda_x(x) * norm_v / 2) / norm_v) * v
+        return self.normalize(self.mob_add(x, second_term))
+
+
+    def th_dot(self, x, y, keepdim=True):
+	    return torch.sum(x * y, dim=-1, keepdim=keepdim)   
+
+
+    def gyr(self, u, v, w):
+        u_norm = self.th_dot(u, u)
+        v_norm = self.th_dot(v, v)
+        u_dot_w = self.th_dot(u, w)
+        v_dot_w = self.th_dot(u, w)
+        u_dot_v = self.th_dot(u, v)
+        A = - u_dot_w * v_norm + v_dot_w + 2 * u_dot_v * v_dot_w
+        B = - v_dot_w * u_norm - u_dot_w
+        D = 1 + 2 * u_dot_v + u_norm * v_norm
+        return w + 2 * (A * u + B * v) / (D + self.EPS)
+
+    #def parallel_transport(self, v, x):
+    #    return super().parallel_transport(v, x)
+    def parallel_transport(self, src, dst, v):
+        return self.lambda_x(src) / torch.clamp(self.lambda_x(dst), 
+                                        min=self.EPS) * self.gyr(dst, -src, v)
+
+    def metric_tensor(self, x, u, v):
+        """The metric tensor in hyperbolic space
+        """
+        u_dot_v = self.th_dot(u, v)
+        lambda_x = self.lambda_x(x)
+        lambda_x *= lambda_x
+        lambda_x *= u_dot_v
+        return lambda_x
+
+
+    def rgrad(self, p, d_p):
+        """Function to compute Riemannian gradient from the Euclidean 
+        gradient in the PoincareBall
+        """
+        p_sqnorm = torch.sum(p.data ** 2, dim=-1, keepdim=True)
+        d_p = d_p * ((1 - p_sqnorm) ** 2 / 4.0).expand_as(d_p)
+        return d_p
     ########### ADDING STUFF FOR THE OPTIMIZER #############
     
     def mobius_addition(self, v1: Tensor, v2: Tensor) -> Tensor:
