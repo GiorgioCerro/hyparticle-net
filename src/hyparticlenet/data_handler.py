@@ -52,22 +52,13 @@ class ParticleDataset(Dataset):
         with HdfReader(path=self.__files[_file_idx]) as hep_file:
             process = hep_file[self.__process_name]
             _event = process[_event_idx]
+            g = gcl.Graphicle.from_numpy(pmu=_event.pmu, edges=_event.edges)
 
-            k = 0
-            mask = _event.masks["final"]
-            pmu = _event.pmu
-            edges = _event.edges
-       
-
-        G = nx.Graph()
-        G.add_edges_from(edges)
-        nodes = np.array(G.nodes())
-        mapping = {nodes[i]: i for i in range(len(nodes))}
-        G = nx.relabel_nodes(G, mapping)
-        edges = torch.tensor(list(G.edges))
+        mapp = {g.nodes[i]: i for i in range(len(g.nodes))}
+        edges = torch.tensor([(mapp[ed[0]], mapp[ed[1]]) for ed in g.edges])
      
         X = torch.tensor(
-                np.transpose([pmu['x'],pmu['y'],pmu['z'],pmu['e'] ]), 
+                np.transpose([g.pmu.energy, g.pmu.x, g.pmu.y, g.pmu.z]), 
                 dtype=torch.float32
         )
         y = torch.tensor(self.label)

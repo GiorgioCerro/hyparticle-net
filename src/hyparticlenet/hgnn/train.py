@@ -8,50 +8,19 @@ import numpy as np
 import random
 import torch
 from sklearn.metrics import roc_curve, accuracy_score
+from torchmetrics import MetricCollection, classification as metrics
 
 from hyparticlenet.hgnn.models.graph_classification import GraphClassification
 from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
-from hyparticlenet.hgnn.util import wandb_cluster_mode, MeanAveragePrecision
+from hyparticlenet.hgnn.util import MeanAveragePrecision
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
 from rich.progress import track
 from rich.pretty import pprint
-from tqdm import tqdm 
-
-HGNN_CONFIG = {
-    # Hyperbolic GNN parameters
-    'in_features': 5,
-    'embed_dim': 5,
-    'num_layers': 5,
-    'num_class': 3,
-    'num_centroid': 100,
-    'manifold': 'poincare',
-    
-    # Training parameters
-    'optimizer': 'adam',
-    'lr': 0.001,
-    'weight_decay': 0,
-    'grad_clip': 1 - 1e-8,
-    'dropout': 0,
-    'batch_size': 32,
-    'epochs': 30,
-    'alpha': 0.5, # loss weight
-    'weight_init': 'xavier', # other option 'default' or empty
-    'seed': 123,
-    'device': 'cpu',
-    'logdir': 'logs',
-    'best_model_name': 'best',
-    }
-
-HGNN_CONFIG = OmegaConf.create(HGNN_CONFIG)
 
 
-def train(
-        train_loader,
-        val_loader,
-        args:DictConfig=HGNN_CONFIG
-        ):
+def train(train_loader, val_loader, args:DictConfig):
 
     # Set seeds
     random.seed(args.seed)
@@ -60,16 +29,12 @@ def train(
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    # Create log directory
-    #file_dir = osp.dirname(osp.realpath(__file__))
-
     experiment_name = 'hgnn_{}_dim{}'.format(args.manifold, args.embed_dim)
     run_time = time.strftime("%d%b%y_%H_%M", time.localtime(time.time()))
 
-
     # Additional arguments
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    print(f'Using this device: {device}')
+    pprint(f'Using this device: {device}')
 
     # Select manifold
     if args.manifold == 'euclidean':
@@ -78,7 +43,7 @@ def train(
         manifold = PoincareBallManifold()
     elif args.manifold == 'lorentz':
         manifold = LorentzManifold()
-        args.embed_dim += 1
+        #args.embed_dim += 1
     else:
         manifold = EuclideanManifold()
         warnings.warn('No valid manifold was given as input, using Euclidean as default')
@@ -91,21 +56,20 @@ def train(
 
     # And optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
-            amsgrad=args.optimizer == 'amsgrad', weight_decay=args.weight_decay)
-    lr_steps = [60, 70]
+            amsgrad=args.optimizer=='amsgrad', weight_decay=args.weight_decay)
+    lr_steps = [40, 50]
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, 
             milestones=lr_steps, gamma=0.1)
 
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
     soft = torch.nn.Softmax(dim=1)
 
-    #Start Wandb
-    #wandb_cluster_mode()
-    #wandb.init(
-    #        project='jet_tagging_testing',
-    #        entity='office4005',
-    #        config=dict(args),
-    #        )
+    metric_scores = MetricCollection(dict(
+        accuracy = metrics.BinaryAccuracy(),
+        precision = metrics.BinaryPrecision(),
+        recall = metrics.BinaryRecall(),
+        f1 = metrics.BinaryF1Score(),
+    ))
 
     # Train, store model with best accuracy on validation set
     best_accuracy = 0
@@ -123,9 +87,20 @@ def train(
             data = data.to(device)
             embedding, out = model(data)
 
-            l1 = MeanAveragePrecision(data, embedding, device)
-            l2 = loss_function(out, data.y)
-            loss = args.alpha * l1 + (1 - args.alpha) * l2
+                
+            if args.loss_embedding == True:
+                l1 = MeanAveragePrecision(args, data, embedding, manifold, device)
+                l2 = loss_function(out, data.y)
+                loss = args.alpha * l1 + (1 - args.alpha) * l2
+
+            else:
+                #if args.manifold != 'euclidean':
+                #    with torch.no_grad():
+                #        l1 = MeanAveragePrecision(args, data, embedding, manifold, device)
+                #        l2 = loss_function(out, data.y)
+                #else:
+
+                loss = loss_function(out, data.y)
 
             loss.backward(retain_graph=True)
 
@@ -139,32 +114,38 @@ def train(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             total_loss += loss.item() * data.num_graphs
-            total_l1 += l1.item() * data.num_graphs
-            total_l2 += l2.item() * data.num_graphs
+            #total_l1 += l1.item() * data.num_graphs
+            #total_l2 += l2.item() * data.num_graphs
             optimizer.step()
 
         scheduler.step()
 
-        training_labels = (training_scores >= 0.5).to(int)
+        training_labels = (training_scores >= 0.5).to(torch.int)
         train_acc = accuracy_score(training_target, training_labels)
+        scores = metric_scores(training_labels, training_target)
     
         # compute valid accuracy
-        val_acc, val_loss, val_auc = evaluate(args, model, val_loader)
+        val_acc, val_loss, val_auc = evaluate(args, model, val_loader, manifold)
         # compute training accuracy and training loss
         train_loss = total_loss / len(train_loader)
-        train_l1 = total_l1 / len(train_loader)
-        train_l2 = total_l2 / len(train_loader)
+        #train_l1 = total_l1 / len(train_loader)
+        #train_l2 = total_l2 / len(train_loader)
         epoch_time = time.time() - init
-        pprint(f'Epoch {epoch:n}, time {epoch_time:.3f}')
-        pprint(f'Train loss {train_loss:.5f}, train acc. {train_acc:.5f}')
-        pprint(f'MeanAveragePrecision {train_l1:.5f}, CrossEntropyLoss {train_l2:.5f}')
-        pprint(f'Valid acc. {val_acc:.5f}, valid auc {val_auc:.5f}')
-        pprint(20*'~')
+        pprint(
+            f"epoch: {epoch:n}, "
+            f"loss: {train_loss:.5f}, "
+            f"accuracy: {scores['accuracy'].item():.1%}, "
+            f"precision: {scores['precision'].item():.1%}, "
+            f"recall: {scores['recall'].item():.1%}, "
+            f"f1: {scores['f1'].item():.1%}, "
+            f"time: {(time.time() - init):.2f} "
+        )
 
         
         if val_acc > best_accuracy:
             p = Path(args.logdir)
             p.mkdir(parents=True, exist_ok=True)
+            pprint("Saving the best model")
             torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
             best_accuracy = val_acc
         
@@ -172,15 +153,18 @@ def train(
         wandb.log({
             'validation_auc': val_auc,
             'validation_accuracy': val_acc,
-            'training_accuracy': train_acc,
             'validation_loss': val_loss,
-            'training_loss': train_loss,
-            'mean_average_precision': train_l1,
-            'cross_entropy_loss': train_l2,
-            })
+            'accuracy': scores['accuracy'].item(),
+            'precision': scores['precision'].item(),
+            'recall': scores['recall'].item(),
+            'f1': scores['f1'].item(),
+            'loss': train_loss,
+            #'mean_average_precision': train_l1,
+            #'cross_entropy_loss': train_l2,
+        })
     
 
-def evaluate(args, model, data_loader):
+def evaluate(args, model, data_loader, manifold):
     """Evaluate the model and return accuracy and AUC.
     """
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
@@ -200,9 +184,12 @@ def evaluate(args, model, data_loader):
             target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
             c+=1
 
-            l1_temp = MeanAveragePrecision(data, embedding, device)
-            l2_temp = loss_function(out, data.y)
-            _loss = l1_temp + l2_temp
+            if args.loss_embedding == True:
+                l1_temp = MeanAveragePrecision(args, data, embedding, manifold, device)
+                l2_temp = loss_function(out, data.y)
+                _loss = l1_temp + l2_temp
+            else: 
+                _loss = loss_function(out, data.y)
             loss_temp += _loss.item() * data.num_graphs
 
     labels = (scores >= 0.5).astype(int)

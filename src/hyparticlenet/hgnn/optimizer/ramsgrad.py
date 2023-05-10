@@ -9,10 +9,8 @@
 Implement a AMSGrad: https://openreview.net/pdf?id=r1eiqi09K7
 """
 import torch as th
-from torch.optim.optimizer import Optimizer, required
-import os
-import math
-import numpy as np
+from torch.optim.optimizer import Optimizer
+
 
 class RiemannianAMSGrad(Optimizer):
     """
@@ -23,8 +21,8 @@ class RiemannianAMSGrad(Optimizer):
         lr (float): learning rate
     """
 
-    def __init__(self, args, params, lr, betas=(0.9, 0.99), eps=1e-8):
-        self.args = args
+    def __init__(self, manifold, params, lr, betas=(0.9, 0.99), eps=1e-8):
+        self.manifold = manifold
         defaults = dict(lr=lr, betas=betas, eps=eps)
         super(RiemannianAMSGrad, self).__init__(params, defaults)
 
@@ -40,7 +38,7 @@ class RiemannianAMSGrad(Optimizer):
                     if p.grad is None:
                         continue
                     grad = p.grad.data
-                    grad = self.args.manifold.rgrad(p, grad)
+                    grad = self.manifold.rgrad(p, grad)
                     if lr is None:
                         lr = group['lr']
 
@@ -66,7 +64,7 @@ class RiemannianAMSGrad(Optimizer):
 
                     # Decay the first and second moment running average coefficient
                     exp_avg.data = beta1 * tau + (1 - beta1) * grad
-                    exp_avg_sq.mul_(beta2).add_(1 - beta2, self.args.manifold.metric_tensor(p, grad, grad))
+                    exp_avg_sq.mul_(beta2).add_(1 - beta2, self.manifold.metric_tensor(p, grad, grad))
                     th.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
                     # Use the max. for normalizing running avg. of gradient
                     denom = max_exp_avg_sq.sqrt().clamp_(min=group['eps'])
@@ -74,7 +72,7 @@ class RiemannianAMSGrad(Optimizer):
                     step_size = group['lr']
 
                     p_original = p.clone()
-                    before_proj = self.args.manifold.exp_map_x(p, (-step_size * exp_avg).div_(denom))
-                    p.data = self.args.manifold.normalize(before_proj)
-                    tau.data = self.args.manifold.parallel_transport(p_original, p, exp_avg)
+                    before_proj = self.manifold.exp_map_x(p, (-step_size * exp_avg).div_(denom))
+                    p.data = self.manifold.normalize(before_proj)
+                    tau.data = self.manifold.parallel_transport(p_original, p, exp_avg)
             return loss

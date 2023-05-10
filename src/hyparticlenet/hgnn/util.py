@@ -1,6 +1,4 @@
 import torch
-
-import torch
 from torch_geometric.utils import to_dense_adj
 
 
@@ -35,8 +33,7 @@ def distance_matrix(nodes):
     dist.fill_diagonal_(1e-8)
     return dist
 
-
-def MeanAveragePrecision(batch, embedding, device=torch.device('cpu')):
+def MeanAveragePrecision(args, batch, embedding, manifold, device=torch.device('cpu')):
     '''Get the mean average precision for all the different graphs.
     '''
     losses = []
@@ -44,19 +41,22 @@ def MeanAveragePrecision(batch, embedding, device=torch.device('cpu')):
         graph = batch[batch_idx]
         hyp = embedding[batch.batch == batch_idx].to(device)
     
-        _dist = distance_matrix(hyp)
-        radius = _dist[graph.edge_index[0], graph.edge_index[1]]
-        distances = _dist[graph.edge_index[0]]
+        if args.manifold == 'poincare':
+            _dist = distance_matrix(hyp)
+        elif args.manifold == 'lorentz':
+            _dist = manifold.dist(hyp.unsqueeze(1), hyp)
 
-        nodes_in_circle = distances <= radius.unsqueeze(-1)
-        adj = to_dense_adj(graph.edge_index)[0]
-        neighbours = adj[graph.edge_index[0]]
+        radius = _dist[graph.edge_index[0], graph.edge_index[1]]
+        #distances = _dist[graph.edge_index[0]]
+
+        #nodes_in_circle = distances <= radius.unsqueeze(-1)
+        nodes_in_circle = _dist[graph.edge_index[0]] <= radius.unsqueeze(-1)
+        neighbours = to_dense_adj(graph.edge_index)[0][graph.edge_index[0]]
 
         num = (nodes_in_circle * neighbours).sum(1)
         # -1 for excluding self-loops
         den = (nodes_in_circle.sum(1) - 1) * neighbours.sum(1)
 
-        mAP = torch.sum(num / den) / graph.num_nodes
-        losses.append(mAP)
+        losses.append(torch.sum(num / den) / graph.num_nodes)
 
-    return - torch.mean(torch.tensor(losses))
+    return 1 - torch.mean(torch.tensor(losses))

@@ -25,7 +25,8 @@ class ManifoldConv(torch.nn.Module):
             (default: :obj:`False`)
     """
 
-    def __init__(self, conv: Callable, manifold: Manifold=EuclideanManifold(), nonlin=torch.nn.SELU(), dropout=0, from_euclidean=False):
+    def __init__(self, conv: Callable, manifold: Manifold=EuclideanManifold(), 
+            nonlin=torch.nn.SELU(), dropout=0, from_euclidean=False):
         super(ManifoldConv, self).__init__()
         self.conv = conv
         self.nonlin = nonlin
@@ -36,8 +37,8 @@ class ManifoldConv(torch.nn.Module):
     def forward(self, x, *args) -> Tensor:
         x = self.manifold.log(x) if not self.from_euclidean else x
         out = self.conv(x, *args)
-        if self.manifold.name == 'lorentz':
-            out[:, 0] = 0
+        #if self.manifold.name == 'lorentz':
+        #    out[:, 0] = 0
         out = self.dropout(out)
         out = self.manifold.exp(out)
         if hasattr(self.manifold, 'nonlin_mapping'):

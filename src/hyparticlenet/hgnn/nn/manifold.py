@@ -184,7 +184,7 @@ class Acosh(Function):
         z = torch.sqrt(torch.clamp(x * x - 1 + eps, 1e-10))
         ctx.save_for_backward(z)
         ctx.eps = eps
-        return torch.log(x + z)
+        return torch.log(x + z).clamp_min(0)
 
     @staticmethod
     def backward(ctx, g):
