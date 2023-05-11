@@ -1,52 +1,41 @@
 import wandb
-from torch_geometric.loader import DataLoader
+from torch.utils.data import DataLoader
 
 from hyparticlenet.hgnn.train import train
-from hyparticlenet.hgnn.train import HGNN_CONFIG
 from hyparticlenet.hgnn.util import wandb_cluster_mode
 
-from lundnet.pyg_dataset import DGLGraphDatasetLund
-# Modify config
-hp = HGNN_CONFIG
+from lundnet.dgl_dataset import DGLGraphDatasetLund, collate_wrapper_tree
 
-hp.logdir = 'logs'
-hp.epochs = 80
-hp.batch_size = 64
-hp.seed = 123
-hp.lr = 0.001
+from omegaconf import OmegaConf
+config_path = 'configs/jets_config.yaml'
+args = OmegaConf.load(config_path)
 
-hp.num_class = 2
-hp.in_features = 5
-hp.embed_dim = 20
-hp.num_centroid = 100
+
+import torch
+NUM_THREADS = 4
+torch.set_num_threads = NUM_THREADS
 
 # Jets Data sets
 PATH = '/scratch/gc2c20/data/w_tagging/'
 
 train_dataset = DGLGraphDatasetLund(PATH+'/train_bkg/', PATH+'/train_sig/', 
-                                        nev=-1, n_sample=500000)
+                                nev=-1, n_samples=args.train_samples)
 valid_dataset = DGLGraphDatasetLund(PATH+'/valid_bkg/', PATH+'/valid_sig/', 
-                                        nev=-1, n_sample=50000)
+                                nev=-1, n_samples=args.valid_samples)
 
-
-train_loader = DataLoader(dataset=train_dataset, batch_size=hp.batch_size, 
-        shuffle=True)#, num_workers=10)
-val_loader = DataLoader(dataset=valid_dataset, batch_size=hp.batch_size) 
+collate_fn = collate_wrapper_tree
+train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, 
+        shuffle=True, collate_fn=collate_fn)
+val_loader = DataLoader(dataset=valid_dataset, batch_size=args.batch_size,
+        collate_fn=collate_fn)
 
 
 wandb_cluster_mode()
 
-# Training the poincare manifold
-print('Training the poincare manifold')
-hp.manifold = 'poincare'
-hp.best_model_name = 'best_jets_' + hp.manifold
-with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
-    train(train_loader, val_loader, args=hp)
+args.loss_embedding = False
+args.best_model_name = 'best_jets_' + args.manifold
+#with wandb.init(project='loss_function', entity='office4005', config=dict(args)):
+train(train_loader, val_loader, args=args)
 
-# Training the euclidean manifold
-print('Training with the euclidean manifold')
-hp.manifold = 'euclidean'
-hp.best_model_name = 'best_jets_' + hp.manifold
-with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
-    train(train_loader, val_loader, args=hp)
+
 

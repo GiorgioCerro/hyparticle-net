@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import global_mean_pool
+from dgl.nn import AvgPooling
 from hyparticlenet.hgnn.nn.manifold import Manifold, EuclideanManifold
 
 
@@ -28,14 +28,16 @@ class CentroidDistance(nn.Module):
         if weight_init and weight_init == 'xavier':
             nn.init.xavier_uniform_(self.centroid_embedding.weight.data)
 
-    def forward(self, x, batch=None):
-        if batch is None:
-            batch = x.new_zeros(x.size(0)).long()
+        self.avgpool = AvgPooling()
+
+    def forward(self, graph, x):
+        #if batch is None:
+        #    batch = x.new_zeros(x.size(0)).long()
         num_nodes = x.size(0)
         x = x.unsqueeze(1).expand(-1, self.num_centroid, -1).contiguous().view(-1, self.embed_dim)
         centroids = self.manifold.exp(self.centroid_embedding(torch.arange(self.num_centroid, device=x.device)))
         centroids = centroids.unsqueeze(0).expand(num_nodes, -1, -1).contiguous().view(-1, self.embed_dim)
         dist_x_centroids = self.manifold.dist(x, centroids).view(num_nodes, self.num_centroid)
-        graph_centroid_dist = global_mean_pool(dist_x_centroids, batch)
+        graph_centroid_dist = self.avgpool(graph, dist_x_centroids)
         return graph_centroid_dist
 

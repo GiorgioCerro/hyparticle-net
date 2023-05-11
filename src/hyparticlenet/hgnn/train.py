@@ -19,38 +19,8 @@ from rich.progress import track
 from rich.pretty import pprint
 from tqdm import tqdm 
 
-HGNN_CONFIG = {
-    # Hyperbolic GNN parameters
-    'in_features': 1000,
-    'embed_dim': 5,
-    'num_layers': 5,
-    'num_class': 3,
-    'num_centroid': 100,
-    'manifold': 'poincare',
-    
-    # Training parameters
-    'optimizer': 'adam',
-    'lr': 0.001,
-    'weight_decay': 0,
-    'grad_clip': 1,
-    'dropout': 0,
-    'batch_size': 32,
-    'epochs': 30,
-    'weight_init': 'xavier', # other option 'default' or empty
-    'seed': 123,
-    'device': 'cpu',
-    'logdir': 'logs',
-    'best_model_name': 'best',
-    }
 
-HGNN_CONFIG = OmegaConf.create(HGNN_CONFIG)
-
-
-def train(
-        train_loader,
-        val_loader,
-        args:DictConfig=HGNN_CONFIG
-        ):
+def train(train_loader, val_loader, args:DictConfig):
 
     # Set seeds
     random.seed(args.seed)
@@ -77,7 +47,7 @@ def train(
         manifold = PoincareBallManifold()
     elif args.manifold == 'lorentz':
         manifold = LorentzManifold()
-        args.embed_dim += 1
+        #args.embed_dim += 1
     else:
         manifold = EuclideanManifold()
         warnings.warn('No valid manifold was given as input, using Euclidean as default')
@@ -97,14 +67,6 @@ def train(
 
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
 
-    #Start Wandb
-    #wandb_cluster_mode()
-    #wandb.init(
-    #        project='jet_tagging_testing',
-    #        entity='office4005',
-    #        config=dict(args),
-    #        )
-
     # Train, store model with best accuracy on validation set
     best_accuracy = 0
     for epoch in track(range(args.epochs), 
@@ -113,47 +75,52 @@ def train(
 
         total_loss = 0
         init = time.time()
-        for data in train_loader:
-            model.zero_grad()
-            data = data.to(device)
-            out = model(data)
-            loss = loss_function(out, data.y)
+        for batch in train_loader:
+            label = batch.label
+            label = label.to(device).squeeze().long()
+            num_graphs = label.shape[0]
+
+            optimizer.zero_grad()
+            logits = model(batch.batch_graph.to(device), batch.features.to(device))
+
+            loss = loss_function(logits, label)
             loss.backward(retain_graph=True)
 
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
-            total_loss += loss.item() * data.num_graphs
+            total_loss += loss.item() * num_graphs
             optimizer.step()
 
    
         scheduler.step()
 
         # compute valid accuracy
-        train_acc = evaluate(args, model, train_loader)
-        val_acc, val_auc = evaluate(args, model, val_loader, return_auc=True)
+        #train_acc = evaluate(args, model, train_loader)
+        #val_acc, val_auc = evaluate(args, model, val_loader, return_auc=True)
         # compute training accuracy and training loss
         train_loss = total_loss / len(train_loader)
         epoch_time = time.time() - init
-        pprint(
-                f'Epoch {epoch:n} - train loss {train_loss:.3f}, train acc. {train_acc:.3f}, valid acc. {val_acc:.3f}, valid auc {val_auc:.3f}, time {epoch_time:.3f}'
+        print(
+                f'Epoch: {epoch:n}, ',
+                f'loss: {total_loss:.3f}, '
         )
 
         
-        if val_acc > best_accuracy:
-            p = Path(args.logdir)
-            p.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
-            best_accuracy = val_acc
+        #if val_acc > best_accuracy:
+        #    p = Path(args.logdir)
+        #    p.mkdir(parents=True, exist_ok=True)
+        #    torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
+        #    best_accuracy = val_acc
         
         # Log to wandb
-        wandb.log({
-            'epoch': epoch,
-            'validation_auc': val_auc,
-            'validation_accuracy': val_acc,
-            'training_accuracy': train_acc,
-            'training_loss': train_loss,
-            })
+        #wandb.log({
+        #    'epoch': epoch,
+        #    'validation_auc': val_auc,
+        #    'validation_accuracy': val_acc,
+        #    'training_accuracy': train_acc,
+        #    'training_loss': train_loss,
+        #    })
     
 
 def evaluate(args, model, data_loader, return_auc=None):
