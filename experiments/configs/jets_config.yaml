@@ -1,29 +1,24 @@
 # Hyperbolic GNN parameters
-in_features: 5
-embed_dim: 3
-num_layers: 3
+in_features: 4
+embed_dim: 10
+num_layers: 5
 num_class: 2
-num_centroid: 50
+num_centroid: 100
 manifold: 'euclidean'
 
 # Training parameters
-optimizer: adam
-lr: 0.001
+optimizer: 'Adam'
+lr: 0.01
 weight_decay: 0.00001
 grad_clip: 0.99999999
-dropout: 0
-batch_size: 64
-epochs: 25
+dropout: 0.1
+batch_size: 256
+epochs: 50
 weight_init: 'xavier'
-loss_embedding: False # use double loss or not
-alpha: 0.4 # loss weight
 seed: 123
 logdir: 'logs'
 best_model_name: 'best'
 
 # Data 
-train_samples: 5_000
-valid_samples: 2_000
-num_workers: 10
-
-
+train_samples: 1_000_000
+valid_samples: 100_000

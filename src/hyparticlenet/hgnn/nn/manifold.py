@@ -133,8 +133,8 @@ class LorentzManifold(Manifold):
         return torch.cat([-xy[..., 0:1], xy[..., 1:]], dim=-1).sum(dim=-1, keepdim=keepdim)
 
     def dist(self, x, y):
-        d = -LorentzScalarProduct.apply(x, y)
-        return Acosh.apply(d, self.EPS)
+        #d = -LorentzScalarProduct.apply(x, y)
+        return Acosh.apply(- LorentzScalarProduct.apply(x, y), self.EPS)
 
     def log(self, y, x=None):
         if x is None:
@@ -152,6 +152,7 @@ class LorentzManifold(Manifold):
         lorentz_norm_v_clipped = torch.clamp(lorentz_norm_v, max=self.norm_clip)
         return self.normalize(torch.cosh(lorentz_norm_v_clipped) * x + torch.sinh(lorentz_norm_v_clipped) * (v / lorentz_norm_v))
 
+
     def nonlin_mapping(self, x, nonlin):
         # Map from Lorentz to Poincare ball
         x_poincare = x[..., 1:] / (x[..., 0:1] + 1)
@@ -159,8 +160,8 @@ class LorentzManifold(Manifold):
         x_nonlin = nonlin(x_poincare)
         # Map from Poincare ball to Lorentz
         squared_norm_x = dot(x_nonlin, x_nonlin)
-        x_lorentz = torch.cat([1 + squared_norm_x, 2 * x_nonlin], dim=-1)
-        return x_lorentz / (1 - squared_norm_x + self.EPS)
+        return torch.cat([1 + squared_norm_x, 2 * x_nonlin], dim=-1) / \
+                (1 - squared_norm_x + self.EPS)
 
     def parallel_transport(self, v, x):
         return super().parallel_transport(v, x)
