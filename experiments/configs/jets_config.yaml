@@ -13,12 +13,12 @@ weight_decay: 0.00001
 grad_clip: 0.99999999
 dropout: 0.1
 batch_size: 256
-epochs: 50
+epochs: 10
 weight_init: 'xavier'
 seed: 123
 logdir: 'logs'
 best_model_name: 'best'
 
 # Data 
-train_samples: 1_000_000
-valid_samples: 100_000
+train_samples: 10_000
+valid_samples: 1_000

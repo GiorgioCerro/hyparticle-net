@@ -31,7 +31,7 @@ class GraphClassification(nn.Module):
             if args.weight_init and args.weight_init == 'xavier':
                 nn.init.xavier_uniform_(conv.weight)
             self.layers.append(ManifoldConv(conv, manifold, 
-                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.5), from_euclidean=i == 0))
+                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.3), from_euclidean=i == 0))
 
         self.centroid_distance = CentroidDistance(args.num_centroid, 
                 args.embed_dim, manifold, args.weight_init)
@@ -43,8 +43,8 @@ class GraphClassification(nn.Module):
 
 
     def forward(self, graph):
-        #x = self.embedding(graph.ndata['features'])
-        x = self.embedding(graph.ndata['pmu'])
+        x = self.embedding(graph.ndata['features'])
+        #x = self.embedding(graph.ndata['pmu'])
         for layer in self.layers:
             x = layer(graph, x)
         centroid_dist = self.centroid_distance(graph, x)

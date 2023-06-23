@@ -18,6 +18,12 @@ from hyparticlenet.data_handler import ParticleDataset
 
 from torchmetrics import MetricCollection, ROC, classification as metrics
 
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from scipy.spatial.distance import cdist
+import seaborn as sns
+from sklearn.cluster import KMeans
+
 NUM_GPUS = torch.cuda.device_count()
 #NUM_THREADS = 4
 #torch.set_num_threads = NUM_THREADS
@@ -25,6 +31,24 @@ NUM_GPUS = torch.cuda.device_count()
 import warnings
 warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling")
 
+
+def centroid_analysis(centroids):
+    # create a heatmap of distances
+    dist = cdist(centroids, centroids)
+    heatmap = wandb.Image(sns.heatmap(dist))
+    plt.close()
+
+    # cluster
+    cluster = KMeans(n_clusters=2).fit_predict(centroids).astype(bool)
+
+    # scatter plot of location in 2d
+    X_embedded = PCA(n_components=2).fit_transform(centroids)
+    plt.scatter(X_embedded[:, 0][cluster], X_embedded[:, 1][cluster])
+    plt.scatter(X_embedded[:, 0][~cluster], X_embedded[:, 1][~cluster])
+    locs = wandb.Image(plt)
+    plt.close()
+
+    return heatmap, locs
 
 
 def training_loop(rank, device, model, optim, dataloader):
@@ -55,7 +79,7 @@ def training_loop(rank, device, model, optim, dataloader):
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1 - 1e-5)
 
-        total_loss += loss.item() * num_graphs
+        total_loss += loss.item() #* num_graphs
         optim.step()
 
     scores = metric_scores.compute()
@@ -68,18 +92,33 @@ def training_loop(rank, device, model, optim, dataloader):
             f"f1: {scores['f1'].item():.1%}, "
         )
 
-        # Log to wandb
-        #wandb.log({
-        #    'validation_auc': val_auc,
-        #    'validation_accuracy': val_acc,
-        #    'validation_loss': val_loss,
-        #    'accuracy': scores['accuracy'].item(),
-        #    'precision': scores['precision'].item(),
-        #    'recall': scores['recall'].item(),
-        #    'f1': scores['f1'].item(),
-        #    'loss': total_loss/len(dataloader),
-        #})
+        parameters = model.parameters()
+        weights = [p for p in parameters]
+        weights = weights[-3].cpu().detach().numpy()
+        heatmap, locs = centroid_analysis(weights)
 
+        # Log to wandb
+        wandb.log({
+            'accuracy': scores['accuracy'].item(),
+            'precision': scores['precision'].item(),
+            'recall': scores['recall'].item(),
+            'f1': scores['f1'].item(),
+            'loss': total_loss/len(dataloader),
+            'Centroids location in 2d (PCA)': locs,
+            'Distances matrix': heatmap,
+        })
+
+    else: 
+        # Log to wandb
+        wandb.log({
+            'accuracy': scores['accuracy'].item(),
+            'precision': scores['precision'].item(),
+            'recall': scores['recall'].item(),
+            'f1': scores['f1'].item(),
+            'loss': total_loss/len(dataloader),
+        })
+
+    plt.close()
     metric_scores.reset()
     return model, optim
 
@@ -103,7 +142,7 @@ def evaluate(rank, device, model, dataloader):
             pred = soft(logits)[:, 1]
             metric_scores.update(pred, label)
 
-            loss_temp += loss_function(logits, label).item() * num_graphs
+            loss_temp += loss_function(logits, label).item() #* num_graphs
     
     scores = metric_scores.compute()
     accuracy = scores["accuracy"].item()
@@ -119,6 +158,7 @@ def evaluate(rank, device, model, dataloader):
                 f"auc: {auc:.1%}, "
                 f"loss: {loss_temp / len(dataloader):.5f}, "
         ) 
+
     return 
 
 
@@ -129,7 +169,7 @@ def enter_process_group(world_size: int, rank: int):
     """
     torch.distributed.init_process_group(
         backend='nccl',
-        init_method='tcp://127.0.0.1:12355',
+        init_method='tcp://127.0.0.1:12359',
         world_size=world_size,
         rank=rank,
     )
@@ -144,8 +184,13 @@ def enter_process_group(world_size: int, rank: int):
         torch.distributed.destroy_process_group()
 
 
-def train(rank, args, dataset, valid_dataset):
-    with enter_process_group(NUM_GPUS, rank) as device:
+def train(rank, args, dataset, valid_dataset, group_id):
+    with ctx.ExitStack() as stack:
+        device = stack.enter_context(enter_process_group(NUM_GPUS, rank))
+        _ = stack.enter_context(
+                wandb.init(project='multiGPUs', entity='office4005', config=dict(args),
+                group=group_id)
+        )
         if args.manifold == 'euclidean':
             manifold = EuclideanManifold()
         elif args.manifold == 'poincare':
@@ -219,6 +264,7 @@ def train(rank, args, dataset, valid_dataset):
 def main(config_path):
     #config_path = 'configs/jets_config.yaml'
     args = OmegaConf.load(config_path)
+    args.in_features=5
     print(f"Working with the following configs:")
     for key, val in args.items():
         print(f"{key}: {val}")
@@ -232,7 +278,12 @@ def main(config_path):
     
 
     args.best_model_name = 'best_' + args.manifold + '_dim' + str(args.embed_dim)
-    torch.multiprocessing.spawn(train, args=(args, train_dataset, valid_dataset,), nprocs=NUM_GPUS)
+
+    wandb_cluster_mode()
+    group_id = args.manifold + '_dim' + str(args.embed_dim) + '_lund'
+    torch.multiprocessing.spawn(train, args=(args, train_dataset, valid_dataset,
+        group_id), nprocs=NUM_GPUS)
+
 
 
 if __name__=='__main__':
