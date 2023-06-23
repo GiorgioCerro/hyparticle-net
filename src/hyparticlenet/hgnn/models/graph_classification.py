@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv
+from dgl.nn.pytorch.conv import GraphConv
 
 from hyparticlenet.hgnn.nn.centroid_distance import CentroidDistance
 from hyparticlenet.hgnn.nn.manifold import Manifold, EuclideanManifold
@@ -27,11 +27,11 @@ class GraphClassification(nn.Module):
 
         self.layers = torch.nn.ModuleList()
         for i in range(args.num_layers):
-            conv = GCNConv(args.embed_dim, args.embed_dim, bias=False)
+            conv = GraphConv(args.embed_dim, args.embed_dim, bias=False)
             if args.weight_init and args.weight_init == 'xavier':
-                nn.init.xavier_uniform_(conv.lin.weight.data)
+                nn.init.xavier_uniform_(conv.weight)
             self.layers.append(ManifoldConv(conv, manifold, 
-                dropout=args.dropout, from_euclidean=i == 0))
+                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.3), from_euclidean=i == 0))
 
         self.centroid_distance = CentroidDistance(args.num_centroid, 
                 args.embed_dim, manifold, args.weight_init)
@@ -42,9 +42,10 @@ class GraphClassification(nn.Module):
             nn.init.uniform_(self.output_linear.bias.data, -1e-4, 1e-4)
 
 
-    def forward(self, data):
-        x = self.embedding(data.x)
+    def forward(self, graph):
+        x = self.embedding(graph.ndata['features'])
+        #x = self.embedding(graph.ndata['pmu'])
         for layer in self.layers:
-            x = layer(x, data.edge_index)
-        centroid_dist = self.centroid_distance(x, batch=data.batch)
+            x = layer(graph, x)
+        centroid_dist = self.centroid_distance(graph, x)
         return self.output_linear(centroid_dist)

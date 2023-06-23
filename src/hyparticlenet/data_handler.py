@@ -1,17 +1,85 @@
 import numpy as np
 from contextlib import ExitStack
-import glob
 import graphicle as gcl
 import torch
-import networkx as nx
+import dgl
+from pathlib import Path
 
 from torch.utils.data import Dataset, DataLoader
-from torch_geometric.data import Data
 
-from tqdm import tqdm
 from heparchy.read.hdf import HdfReader
 
 #from manifold.poincare import PoincareBall
+class ParticleDataset(Dataset):
+    '''Particles shower dataset.'''
+
+    def __init__(
+        self, 
+        sig_path: Path, 
+        bkg_path: Path,
+        num_samples: int =-1, 
+        open_at_init: bool = False,
+    ) -> None:
+        self.sig_path = sig_path
+        self.bkg_path = bkg_path
+        self._stack = ExitStack()
+        self.num_samples = num_samples
+        #self.indices = range(int(self.num_samples / 2.))
+        self.indices = range(int(self.__len__() / 2.))
+        if open_at_init is True:
+            self._open_file()
+       
+
+    def __len__(self) -> int:
+        with HdfReader(self.sig_path) as hep_file:
+            sig_size = len(hep_file["signal"])
+        with HdfReader(self.bkg_path) as hep_file:
+            bkg_size = len(hep_file["background"])
+
+        return min(self.num_samples, min(sig_size, bkg_size) * 2)
+
+
+    def __getitem__(self, idx: int) -> tuple[dgl.DGLGraph, torch.Tensor]:
+        half_samples = int(self.__len__() / 2.)
+        if idx < half_samples:
+            event = self._sig_events[self.indices[idx]]
+            label = torch.tensor(0)
+
+        else:
+            event = self._bkg_events[self.indices[idx - half_samples]]
+            label = torch.tensor(1)
+
+        graph = self._generate_graph(event)
+        return (graph, label)
+
+
+    def _generate_graph(self, event):
+        coordinates = torch.tensor(event.custom['tree_pmu']).to(torch.float32)
+        features = torch.tensor(event.custom['tree_lund']).to(torch.float32)
+        edges = torch.tensor(event.custom['tree_edges'])
+        edges = torch.cat((edges, edges.flip(1)), dim=0)
+
+        graph = dgl.graph((edges[:,0], edges[:,1]))
+        graph.ndata['coordinates'] = coordinates
+        graph.ndata['features'] = features
+        pmu = gcl.MomentumArray(coordinates)
+        graph.ndata['pmu'] = torch.tensor(np.array([
+            pmu.eta, pmu.phi, pmu.pt, pmu.mass])).transpose(0, 1).to(torch.float32)
+
+        return graph
+
+
+    def _open_file(self) -> None:
+        self._stack = ExitStack()
+        sig_file = self._stack.enter_context(HdfReader(self.sig_path))
+        bkg_file = self._stack.enter_context(HdfReader(self.bkg_path))
+        
+        self._sig_events = sig_file["signal"]
+        self._bkg_events = bkg_file["background"]
+
+       
+
+"""
 class ParticleDataset(Dataset):
     '''Particles shower dataset.'''
 
@@ -79,3 +147,4 @@ class ParticleDataset(Dataset):
             y = y,
         )
         return data
+"""

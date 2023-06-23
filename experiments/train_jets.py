@@ -1,52 +1,41 @@
 import wandb
-from torch_geometric.loader import DataLoader
+from pathlib import Path
+from dgl.dataloading import GraphDataLoader
+from torch.utils.data import ConcatDataset, Subset
 
 from hyparticlenet.hgnn.train import train
-from hyparticlenet.hgnn.train import HGNN_CONFIG
-from hyparticlenet.hgnn.util import wandb_cluster_mode
+from hyparticlenet.hgnn.util import wandb_cluster_mode, collate_fn, worker_init_fn
+from hyparticlenet.data_handler import ParticleDataset
 
-from lundnet.pyg_dataset import DGLGraphDatasetLund
-# Modify config
-hp = HGNN_CONFIG
+from omegaconf import OmegaConf
+config_path = 'configs/jets_config.yaml'
+args = OmegaConf.load(config_path)
 
-hp.logdir = 'logs'
-hp.epochs = 80
-hp.batch_size = 64
-hp.seed = 123
-hp.lr = 0.001
 
-hp.num_class = 2
-hp.in_features = 5
-hp.embed_dim = 20
-hp.num_centroid = 100
+#import torch
+#NUM_THREADS = 4
+#torch.set_num_threads = NUM_THREADS
+
+import warnings
+warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling")
 
 # Jets Data sets
-PATH = '/scratch/gc2c20/data/w_tagging/'
+PATH = '/scratch/gc2c20/data/jet_tagging/prova'
 
-train_dataset = DGLGraphDatasetLund(PATH+'/train_bkg/', PATH+'/train_sig/', 
-                                        nev=-1, n_sample=500000)
-valid_dataset = DGLGraphDatasetLund(PATH+'/valid_bkg/', PATH+'/valid_sig/', 
-                                        nev=-1, n_sample=50000)
+args.epochs = 10
+args.batch_size = 128
+args.train_samples = 1_000
+train_dataset = ParticleDataset(Path(PATH + '/train_sig.hdf5'), Path(PATH + '/train_bkg.hdf5'),
+        num_samples=args.train_samples, open_at_init=True)
 
+train_loader = GraphDataLoader(dataset=train_dataset, batch_size=args.batch_size, 
+        shuffle=True, collate_fn=collate_fn)
+val_loader = GraphDataLoader(dataset=train_dataset, batch_size=args.batch_size, 
+        shuffle=True, collate_fn=collate_fn)
 
-train_loader = DataLoader(dataset=train_dataset, batch_size=hp.batch_size, 
-        shuffle=True)#, num_workers=10)
-val_loader = DataLoader(dataset=valid_dataset, batch_size=hp.batch_size) 
+#wandb_cluster_mode()
 
-
-wandb_cluster_mode()
-
-# Training the poincare manifold
-print('Training the poincare manifold')
-hp.manifold = 'poincare'
-hp.best_model_name = 'best_jets_' + hp.manifold
-with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
-    train(train_loader, val_loader, args=hp)
-
-# Training the euclidean manifold
-print('Training with the euclidean manifold')
-hp.manifold = 'euclidean'
-hp.best_model_name = 'best_jets_' + hp.manifold
-with wandb.init(project='jet_tagging_testing', entity='office4005', config=dict(hp)):
-    train(train_loader, val_loader, args=hp)
-
+args.manifold = 'euclidean'
+args.best_model_name = 'best_jets_' + args.manifold
+#with wandb.init(project='loss_function', entity='office4005', config=dict(args)):
+train(train_loader, val_loader, args=args)

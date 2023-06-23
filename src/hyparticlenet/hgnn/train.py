@@ -2,55 +2,25 @@ import os, os.path as osp
 import time
 import warnings
 
-from pathlib import Path
 
 import numpy as np
 import random
 import torch
 from sklearn.metrics import roc_curve, accuracy_score
+from torchmetrics import MetricCollection, ROC, classification as metrics
 
 from hyparticlenet.hgnn.models.graph_classification import GraphClassification
 from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
-from hyparticlenet.hgnn.util import wandb_cluster_mode
+from hyparticlenet.hgnn.util import count_params, ROC_area
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
 from rich.progress import track
 from rich.pretty import pprint
-from tqdm import tqdm 
-
-HGNN_CONFIG = {
-    # Hyperbolic GNN parameters
-    'in_features': 1000,
-    'embed_dim': 5,
-    'num_layers': 5,
-    'num_class': 3,
-    'num_centroid': 100,
-    'manifold': 'poincare',
-    
-    # Training parameters
-    'optimizer': 'adam',
-    'lr': 0.001,
-    'weight_decay': 0,
-    'grad_clip': 1,
-    'dropout': 0,
-    'batch_size': 32,
-    'epochs': 30,
-    'weight_init': 'xavier', # other option 'default' or empty
-    'seed': 123,
-    'device': 'cpu',
-    'logdir': 'logs',
-    'best_model_name': 'best',
-    }
-
-HGNN_CONFIG = OmegaConf.create(HGNN_CONFIG)
+from tqdm import tqdm
 
 
-def train(
-        train_loader,
-        val_loader,
-        args:DictConfig=HGNN_CONFIG
-        ):
+def train(train_loader, val_loader, args:DictConfig):
 
     # Set seeds
     random.seed(args.seed)
@@ -67,17 +37,18 @@ def train(
 
 
     # Additional arguments
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    print(f'Using this device: {device}')
-
-    # Select manifold
+    #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cpu')
+    #pprint(f'Using this device: {device}')
+    
+        # Select manifold
     if args.manifold == 'euclidean':
         manifold = EuclideanManifold()
     elif args.manifold == 'poincare':
         manifold = PoincareBallManifold()
     elif args.manifold == 'lorentz':
         manifold = LorentzManifold()
-        args.embed_dim += 1
+        #args.embed_dim += 1
     else:
         manifold = EuclideanManifold()
         warnings.warn('No valid manifold was given as input, using Euclidean as default')
@@ -86,24 +57,30 @@ def train(
     model = GraphClassification(args, manifold).to(device)
     #path_load = "/home/gc2c20/myproject/hyparticle-net/experiments/logs/best_jets_d2_poincare.pt" 
     #model.load_state_dict(torch.load(path_load))
+    num_params = count_params(model)
+    pprint(f'Training model with {num_params} learnable parameters.')
 
-
+   
     # And optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
+    if args.optimizer == 'Adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, 
             amsgrad=args.optimizer == 'amsgrad', weight_decay=args.weight_decay)
-    lr_steps = [60, 70]
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, 
-            milestones=lr_steps, gamma=0.1)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
+            weight_decay=args.weight_decay, momentum=0.9)
+
+    #lr_steps = [60, 70]
+    #scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, 
+    #        milestones=lr_steps, gamma=0.1)
 
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
-
-    #Start Wandb
-    #wandb_cluster_mode()
-    #wandb.init(
-    #        project='jet_tagging_testing',
-    #        entity='office4005',
-    #        config=dict(args),
-    #        )
+    soft = torch.nn.Softmax(dim=1)
+    metric_scores = MetricCollection(dict(
+        accuracy = metrics.BinaryAccuracy(),
+        precision = metrics.BinaryPrecision(),
+        recall = metrics.BinaryRecall(),
+        f1 = metrics.BinaryF1Score(),
+    ))
 
     # Train, store model with best accuracy on validation set
     best_accuracy = 0
@@ -113,82 +90,102 @@ def train(
 
         total_loss = 0
         init = time.time()
-        for data in train_loader:
-            model.zero_grad()
-            data = data.to(device)
-            out = model(data)
-            loss = loss_function(out, data.y)
-            loss.backward(retain_graph=True)
+        for graph, label in train_loader:
+            label = label.to(device).squeeze().long()
+            num_graphs = label.shape[0]
+
+            optimizer.zero_grad()
+            logits = model(graph.to(device))
+
+            loss = loss_function(logits, label)
+            loss.backward()
+
+            pred = soft(logits)[:, 1]
+            #pred = (pred >= 0.5).long()
+            metric_scores.update(pred, label)
 
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
-            total_loss += loss.item() * data.num_graphs
+            total_loss += loss.item() * num_graphs
             optimizer.step()
-
    
-        scheduler.step()
+        #scheduler.step()
+
+        scores = metric_scores.compute()
 
         # compute valid accuracy
-        train_acc = evaluate(args, model, train_loader)
-        val_acc, val_auc = evaluate(args, model, val_loader, return_auc=True)
-        # compute training accuracy and training loss
+        val_acc, val_loss, val_auc = evaluate(model, val_loader)
         train_loss = total_loss / len(train_loader)
         epoch_time = time.time() - init
         pprint(
-                f'Epoch {epoch:n} - train loss {train_loss:.3f}, train acc. {train_acc:.3f}, valid acc. {val_acc:.3f}, valid auc {val_auc:.3f}, time {epoch_time:.3f}'
+            f"epoch: {epoch:n}, "
+            f"loss: {train_loss:.5f}, "
+            f"accuracy: {scores['accuracy'].item():.1%}, "
+            f"precision: {scores['precision'].item():.1%}, "
+            f"recall: {scores['recall'].item():.1%}, "
+            f"f1: {scores['f1'].item():.1%}, "
+            f"time: {epoch_time:.2f} "
         )
 
         
         if val_acc > best_accuracy:
-            p = Path(args.logdir)
-            p.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
+        #    p = Path(args.logdir)
+        #    p.mkdir(parents=True, exist_ok=True)
+        #    pprint("Saving the best model")
+        #    torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
             best_accuracy = val_acc
         
-        # Log to wandb
-        wandb.log({
-            'epoch': epoch,
-            'validation_auc': val_auc,
-            'validation_accuracy': val_acc,
-            'training_accuracy': train_acc,
-            'training_loss': train_loss,
-            })
-    
 
-def evaluate(args, model, data_loader, return_auc=None):
-    """Evaluate the model and return accuracy and AUC.
+        # Log to wandb
+        #wandb.log({
+        #    'validation_auc': val_auc,
+        #    'validation_accuracy': val_acc,
+        #    'validation_loss': val_loss,
+        #    'accuracy': scores['accuracy'].item(),
+        #    'precision': scores['precision'].item(),
+        #    'recall': scores['recall'].item(),
+        #    'f1': scores['f1'].item(),
+        #    'loss': train_loss,
+        #})
+    
+    return best_accuracy
+
+
+def evaluate(model, data_loader):
+    """Evaluate the model and return accuracy, loss and AUC.
     """
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cpu')
+    loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
     soft = torch.nn.Softmax(dim=1)
     model.eval()
-    with torch.no_grad():
-        scores = np.zeros(len(data_loader.dataset))
-        target = np.zeros(len(data_loader.dataset), dtype=int)
-        c = 0 
-        for data in data_loader:
-            data = data.to(device)
-            pred = soft(model(data))[:, 1]
-            scores[args.batch_size * c : args.batch_size * (c+1)] = pred.cpu()
-            target[args.batch_size * c : args.batch_size * (c+1)] = data.y.cpu()
-            c+=1
 
-    labels = (scores >= 0.5).astype(int)
-    accuracy = accuracy_score(target, labels)
-    
-    fpr, tpr, threshs = roc_curve(target, scores, pos_label=1)
+    metric_scores = MetricCollection(dict(
+        accuracy = metrics.BinaryAccuracy(),
+        ROC = ROC(task="binary"),
+    ))
+    loss_temp = 0 
+    with torch.no_grad():
+        for graph, label in tqdm(data_loader):
+            label = label.to(device).squeeze().long()
+            num_graphs = label.shape[0]
+
+            logits = model(graph.to(device))
+
+
+            pred = soft(logits)[:, 1]
+            #pred = (pred >= 0.5).long()
+            metric_scores.update(pred, label)
+
+            loss_temp += loss_function(logits, label).item() * num_graphs
+
+    scores = metric_scores.compute()
+    accuracy = scores['accuracy'].item()
+    fpr, tpr, threshs = scores['ROC']
     eff_s = tpr
     eff_b = 1 - fpr
     auc = ROC_area(eff_s, eff_b)
 
-    if return_auc:
-        return accuracy, auc
-    else:
-        return accuracy
+    return accuracy, loss_temp / len(data_loader), auc
 
-
-def ROC_area(signal_eff, background_eff):
-    """Area under the ROC curve.
-    """
-    normal_order = signal_eff.argsort()
-    return np.trapz(background_eff[normal_order], signal_eff[normal_order])
