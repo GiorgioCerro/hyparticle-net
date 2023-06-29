@@ -6,6 +6,7 @@ import dgl
 from pathlib import Path
 
 from torch.utils.data import Dataset, DataLoader
+from scipy import sparse
 
 from heparchy.read.hdf import HdfReader
 
@@ -24,7 +25,6 @@ class ParticleDataset(Dataset):
         self.bkg_path = bkg_path
         self._stack = ExitStack()
         self.num_samples = num_samples
-        #self.indices = range(int(self.num_samples / 2.))
         self.indices = range(int(self.__len__() / 2.))
         if open_at_init is True:
             self._open_file()
@@ -49,23 +49,31 @@ class ParticleDataset(Dataset):
             event = self._bkg_events[self.indices[idx - half_samples]]
             label = torch.tensor(1)
 
-        graph = self._generate_graph(event)
+        graph = self._generate_graph(event, radius=0.5, shift_centre=True)
         return (graph, label)
 
 
-    def _generate_graph(self, event):
-        coordinates = torch.tensor(event.custom['tree_pmu']).to(torch.float32)
-        features = torch.tensor(event.custom['tree_lund']).to(torch.float32)
-        edges = torch.tensor(event.custom['tree_edges'])
-        edges = torch.cat((edges, edges.flip(1)), dim=0)
+    def _generate_graph(self, event, radius=1.0, shift_centre=False, dtype='<f4'):
+        pmu = gcl.MomentumArray(event.pmu[event.masks['final']])
 
-        graph = dgl.graph((edges[:,0], edges[:,1]))
-        graph.ndata['coordinates'] = coordinates
-        graph.ndata['features'] = features
-        pmu = gcl.MomentumArray(coordinates)
-        graph.ndata['pmu'] = torch.tensor(np.array([
-            pmu.eta, pmu.phi, pmu.pt, pmu.mass])).transpose(0, 1).to(torch.float32)
+        if shift_centre is True:
+            pmu = pmu.shift_eta(-gcl.calculate.pseudorapidity_centre(pmu), 
+                experimental=False).shift_phi(-gcl.calculate.azimuth_centre(pmu))
 
+        dist = pmu.delta_R(pmu)
+        adj_dense = np.where(dist < radius, 1.0, 0.0)
+        adj = sparse.coo_array(adj_dense).astype(dtype)
+        graph = dgl.from_scipy(adj, idtype=torch.int32)
+        graph.ndata['pmu'] = torch.from_numpy(pmu._data.astype(dtype))
+
+        data = np.transpose([
+            pmu.eta.astype(dtype, copy=True),
+            pmu.phi.astype(dtype, copy=True),
+            pmu.pt.astype(dtype, copy=True),
+            pmu.mass.astype(dtype, copy=True)
+        ])
+                        
+        graph.ndata['features'] = torch.from_numpy(data)
         return graph
 
 
