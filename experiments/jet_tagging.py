@@ -7,9 +7,10 @@ from omegaconf import OmegaConf
 from pathlib import Path
 from tqdm import tqdm
 import click
+from collections import OrderedDict
 
 from hyparticlenet.hgnn.util import wandb_cluster_mode, count_params, collate_fn
-from hyparticlenet.hgnn.util import worker_init_fn, ROC_area
+from hyparticlenet.hgnn.util import worker_init_fn, ROC_area, bkg_rejection_at_threshold
 from hyparticlenet.hgnn.models.graph_classification import GraphClassification
 from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
 
@@ -17,12 +18,6 @@ from dgl.dataloading import GraphDataLoader
 from hyparticlenet.data_handler import ParticleDataset
 
 from torchmetrics import MetricCollection, ROC, classification as metrics
-
-import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from scipy.spatial.distance import cdist
-import seaborn as sns
-from sklearn.cluster import KMeans
 
 NUM_GPUS = torch.cuda.device_count()
 #NUM_THREADS = 4
@@ -32,26 +27,7 @@ import warnings
 warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling")
 
 
-def centroid_analysis(centroids):
-    # create a heatmap of distances
-    dist = cdist(centroids, centroids)
-    heatmap = wandb.Image(sns.heatmap(dist))
-    plt.close()
-
-    # cluster
-    cluster = KMeans(n_clusters=2).fit_predict(centroids).astype(bool)
-
-    # scatter plot of location in 2d
-    X_embedded = PCA(n_components=2).fit_transform(centroids)
-    plt.scatter(X_embedded[:, 0][cluster], X_embedded[:, 1][cluster])
-    plt.scatter(X_embedded[:, 0][~cluster], X_embedded[:, 1][~cluster])
-    locs = wandb.Image(plt)
-    plt.close()
-
-    return heatmap, locs
-
-
-def training_loop(rank, device, model, optim, dataloader):
+def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader):
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
     soft = torch.nn.Softmax(dim=1)
     metric_scores = MetricCollection(dict(
@@ -83,6 +59,8 @@ def training_loop(rank, device, model, optim, dataloader):
         optim.step()
 
     scores = metric_scores.compute()
+    val_acc, val_auc, val_loss = evaluate(device, model, val_loader)
+
     if rank == 0:
         print(
             f"loss: {(total_loss/len(dataloader)):.5f}, "
@@ -90,40 +68,29 @@ def training_loop(rank, device, model, optim, dataloader):
             f"precision: {scores['precision'].item():.1%}, "
             f"recall: {scores['recall'].item():.1%}, "
             f"f1: {scores['f1'].item():.1%}, "
+            f"\n validation: "
+            f"val_acc: {val_acc:.1%},"
+            f"val_auc: {val_auc:.1%},"
+            f"val_loss: {val_loss:.5f}, "
         )
 
-        parameters = model.parameters()
-        weights = [p for p in parameters]
-        weights = weights[-3].cpu().detach().numpy()
-        heatmap, locs = centroid_analysis(weights)
+    wandb.log({
+        'accuracy': scores['accuracy'].item(),
+        'precision': scores['precision'].item(),
+        'recall': scores['recall'].item(),
+        'f1': scores['f1'].item(),
+        'loss': total_loss/len(dataloader),
+        'val/accuracy': val_acc,
+        'val/auc': val_auc,
+        'val/loss': val_loss,
+    })
 
-        # Log to wandb
-        wandb.log({
-            'accuracy': scores['accuracy'].item(),
-            'precision': scores['precision'].item(),
-            'recall': scores['recall'].item(),
-            'f1': scores['f1'].item(),
-            'loss': total_loss/len(dataloader),
-            'Centroids location in 2d (PCA)': locs,
-            'Distances matrix': heatmap,
-        })
-
-    else: 
-        # Log to wandb
-        wandb.log({
-            'accuracy': scores['accuracy'].item(),
-            'precision': scores['precision'].item(),
-            'recall': scores['recall'].item(),
-            'f1': scores['f1'].item(),
-            'loss': total_loss/len(dataloader),
-        })
-
-    plt.close()
+    scheduler.step(val_loss)
     metric_scores.reset()
     return model, optim
 
 
-def evaluate(rank, device, model, dataloader):
+def evaluate(device, model, dataloader, testing=None):
     loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
     soft = torch.nn.Softmax(dim=1)
     metric_scores = MetricCollection(dict(
@@ -151,15 +118,12 @@ def evaluate(rank, device, model, dataloader):
     eff_b = 1 - fpr
     auc = ROC_area(eff_s, eff_b)
         
-    if rank==0:
-        print(
-                f"validation: "
-                f"accuracy: {accuracy:.1%}, "
-                f"auc: {auc:.1%}, "
-                f"loss: {loss_temp / len(dataloader):.5f}, "
-        ) 
-
-    return 
+    if testing:
+        bkg_rej_05 = bkg_rejection_at_threshold(eff_b, eff_s, sig_eff=0.5)
+        bkg_rej_07 = bkg_rejection_at_threshold(eff_b, eff_s, sig_eff=0.7)
+        return accuracy, auc, loss_temp/len(dataloader), bkg_rej_05, bkg_rej_07
+    else:
+        return accuracy, auc, loss_temp/len(dataloader)
 
 
 @ctx.contextmanager
@@ -184,11 +148,11 @@ def enter_process_group(world_size: int, rank: int):
         torch.distributed.destroy_process_group()
 
 
-def train(rank, args, dataset, valid_dataset, group_id):
+def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
     with ctx.ExitStack() as stack:
         device = stack.enter_context(enter_process_group(NUM_GPUS, rank))
         _ = stack.enter_context(
-                wandb.init(project='multiGPUs', entity='office4005', config=dict(args),
+                wandb.init(project='training-performance', entity='office4005', config=dict(args),
                 group=group_id)
         )
         if args.manifold == 'euclidean':
@@ -202,13 +166,19 @@ def train(rank, args, dataset, valid_dataset, group_id):
             warnings.warn('No valid manifold was given as input, using Euclidean as default')
 
         model = GraphClassification(args, manifold).to(device)
+        #model = GraphClassification(args, manifold)
+        #state_dict = torch.load("logs/" + args.best_model_name + ".pt", map_location="cpu")
+        #dt = OrderedDict()
+        #for key, val in state_dict.items():
+        #    dt[key[7:]] = val
+        #model.load_state_dict(dt)
+        #model.to(device)
+
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[device], output_device=device)
         optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-        lr_steps = [20, 30]
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, 
-            milestones=lr_steps, gamma=0.1)
-
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', 
+            patience=10, factor=0.5)
         if rank == 0:
             print(f"Model with {count_params(model)} trainable parameters")
             print(f"Training over {len(dataset)} events")
@@ -245,11 +215,9 @@ def train(rank, args, dataset, valid_dataset, group_id):
                 collate_fn=collate_fn,
                 worker_init_fn=worker_init_fn,
             )
-            #    collate_fn=collate_fn)
 
-            model, optim = training_loop(rank, device, model, optim, dataloader)
-            evaluate(rank, device, model, val_loader)
-            #scheduler.step()
+            model, optim = training_loop(rank, device, model, optim, scheduler,
+                dataloader, val_loader)
             
             if rank == 0: 
                 print(f'epoch time: {(time.time() - init):.2f}')
@@ -258,13 +226,38 @@ def train(rank, args, dataset, valid_dataset, group_id):
                 p.mkdir(parents=True, exist_ok=True)
                 torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
 
+        
+        print(20*"=")
+        print(f"Training complete")
+        print(f"Testing on {len(test_dataset)} events.")
+        test_loader = GraphDataLoader(
+            dataset=test_dataset,
+            batch_size=args.batch_size,
+            num_workers=20,
+            drop_last=True, 
+            use_ddp=True,
+            pin_memory=True,
+            pin_memory_device=str(device),
+            prefetch_factor=16,
+            collate_fn=collate_fn,
+            worker_init_fn=worker_init_fn,
+        )
+        test_acc, test_auc, test_loss, bkg_rej05, bkg_rej07 = evaluate(device, 
+            model, test_loader, testing=True)
+        print(f"Accuracy: {test_acc:.5f}")
+        print(f"AUC: {test_auc:.5f}")
+        print(f"Loss: {test_loss:.5f}")
+        print(f"Inv_bkg_at_sig_05: {bkg_rej05:.5f}")
+        print(f"Inv_bkg_at_sig_07: {bkg_rej07:.5f}")
+
 
 @click.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def main(config_path):
     #config_path = 'configs/jets_config.yaml'
     args = OmegaConf.load(config_path)
-    args.in_features=5
+    args.train_samples=1_000_000
+    args.valid_samples=100_000
     print(f"Working with the following configs:")
     for key, val in args.items():
         print(f"{key}: {val}")
@@ -275,14 +268,16 @@ def main(config_path):
                 Path(PATH + '/train_bkg.hdf5'), num_samples=args.train_samples)
     valid_dataset = ParticleDataset(Path(PATH + '/valid_sig.hdf5'), 
                 Path(PATH + '/valid_bkg.hdf5'), num_samples=args.valid_samples)
+    test_dataset = ParticleDataset(Path(PATH + '/test_sig.hdf5'),
+                Path(PATH + '/test_bkg.hdf5'), num_samples=args.valid_samples)
     
 
     args.best_model_name = 'best_' + args.manifold + '_dim' + str(args.embed_dim)
 
     wandb_cluster_mode()
-    group_id = args.manifold + '_dim' + str(args.embed_dim) + '_lund'
+    group_id = args.manifold + '_dim' + str(args.embed_dim) + '_5l'
     torch.multiprocessing.spawn(train, args=(args, train_dataset, valid_dataset,
-        group_id), nprocs=NUM_GPUS)
+        test_dataset, group_id), nprocs=NUM_GPUS)
 
 
 

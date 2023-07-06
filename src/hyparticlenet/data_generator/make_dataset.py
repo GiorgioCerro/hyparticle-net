@@ -61,6 +61,12 @@ def main(lhe_path, pythia_path, output_filepath,process_name):
 
     #defining jetdef
     jet_def = fj.JetDefinition(fj.cambridge_algorithm, 1000.0)
+    tree_type = ['akt', 'CA', 'kt']
+    jet_def_ls = [
+        fj.JetDefinition(fj.antikt_algorithm, 1000.0),
+        fj.JetDefinition(fj.cambridge_algorithm, 1000.0),
+        fj.JetDefinition(fj.kt_algorithm, 1000.0)
+    ]
     with HdfWriter(split_path) as hep_file:
         with hep_file.new_process(process_name) as proc:
             stop_condition = 0 
@@ -83,23 +89,26 @@ def main(lhe_path, pythia_path, output_filepath,process_name):
                             data = _build_tree(JetTree(jet))
                             tree_pmu = np.array(list(
                                 nx.get_node_attributes(data, 'coordinates').values()))
-                            tree_lund = np.array(list(
-                                nx.get_node_attributes(data, 'features').values()))
+                            #tree_lund = np.array(list(
+                            #    nx.get_node_attributes(data, 'features').values()))
 
                             if graph.pmu.data.shape[0] > 1 and tree_pmu.shape[0] > 1 and np.array(data.edges).shape[0] > 1:
                                 with proc.new_event() as event_write:
                             
-                                    if graph.pmu.data.shape[0] == 1 or tree_pmu.shape[0] == 1:
-                                        breakpoint()
                                     event_write.pmu = graph.pmu.data[mask]
                                     event_write.pdg = graph.pdg.data[mask]
                                     event_write.status = graph.status.data[mask]
                                     event_write.edges = graph.edges[mask]
                                     event_write.masks['final'] = graph.final.data[mask]
                                   
-                                    event_write.custom['tree_pmu'] = tree_pmu
-                                    event_write.custom['tree_lund'] = tree_lund
-                                    event_write.custom['tree_edges'] = np.array(data.edges)
+                                    for k in range(3):
+                                        jt = jet_def_ls[k](constits)[0]
+                                        data = _build_tree(JetTree(jet))
+                                        tree_pmu = np.array(list(
+                                            nx.get_node_attributes(data, 'coordinates').values()))
+ 
+                                        event_write.custom['tree_pmu' + tree_type[k]] = tree_pmu
+                                        event_write.custom['tree_edges' + tree_type[k]] = np.array(data.edges)
      
                 
 
@@ -111,21 +120,21 @@ def _build_tree(root):
     def _rec_build(nid, node):
         branches = [node.harder, node.softer] 
         for branch in branches:
-            if branch is None or branch.lundCoord is None:
+            if branch is None:# or branch.lundCoord is None:
                 # stop when reaching the leaf nodes
                 # we do not add the leaf nodes to the graph/tree as they do no have Lund coords
                 continue
             cid = g.number_of_nodes()
             node_p4 = TLorentzVector(*branch.node)
             spatialCoord = np.array([node_p4.x, node_p4.y, node_p4.z, node_p4.E])
-            g.add_node(cid, coordinates=spatialCoord, features=branch.lundCoord.state())
+            g.add_node(cid, coordinates=spatialCoord)#, features=branch.lundCoord.state())
             g.add_edge(cid, nid)
             _rec_build(cid, branch)
 
     # add root
     #g.add_node(0, coordinates=np.zeros(4, dtype='float32'))
-    g.add_node(0, coordinates=np.array([jet_p4.x, jet_p4.y, jet_p4.z, jet_p4.E]),
-        features=root.lundCoord.state())
+    g.add_node(0, coordinates=np.array([jet_p4.x, jet_p4.y, jet_p4.z, jet_p4.E]))
+        #features=root.lundCoord.state())
     _rec_build(0, root)
 
     return g

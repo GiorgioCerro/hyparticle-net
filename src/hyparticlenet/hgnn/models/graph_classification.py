@@ -21,17 +21,17 @@ class GraphClassification(nn.Module):
         super(GraphClassification, self).__init__()
         self.manifold = manifold
 
-        self.embedding = nn.Linear(args.in_features, args.embed_dim, bias=False)
+        self.embedding = nn.Linear(args.in_features, args.embed_dim, bias=True)
         if args.weight_init and args.weight_init == 'xavier':
             nn.init.xavier_uniform_(self.embedding.weight.data)
 
         self.layers = torch.nn.ModuleList()
         for i in range(args.num_layers):
-            conv = GraphConv(args.embed_dim, args.embed_dim, bias=False)
+            conv = GraphConv(args.embed_dim, args.embed_dim, bias=True)
             if args.weight_init and args.weight_init == 'xavier':
                 nn.init.xavier_uniform_(conv.weight)
             self.layers.append(ManifoldConv(conv, manifold, 
-                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.3), from_euclidean=i == 0))
+                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.2), from_euclidean=i == 0))
 
         self.centroid_distance = CentroidDistance(args.num_centroid, 
                 args.embed_dim, manifold, args.weight_init)
