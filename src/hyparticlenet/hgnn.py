@@ -1,13 +1,14 @@
-import torch
+import typing as ty
+import warnings
+
 import torch.nn as nn
-from dgl.nn.pytorch.conv import GraphConv
 
-from hyparticlenet.hgnn.nn.centroid_distance import CentroidDistance
-from hyparticlenet.hgnn.nn.manifold import Manifold, EuclideanManifold
-from hyparticlenet.hgnn.nn.manifold_conv import ManifoldConv
+from hyparticlenet.centroid_distance import CentroidDistance
+from hyparticlenet.manifold import EuclideanManifold, LorentzManifold, PoincareBallManifold
+from hyparticlenet.manifold_edgeconv import ManifoldEdgeConv
 
 
-class GraphClassification(nn.Module):
+class HyperbolicGNN(nn.Module):
     r"""
     Graph classification network based on Hyperbolic GNN paper.
 
@@ -17,35 +18,43 @@ class GraphClassification(nn.Module):
             (default: :obj:`EuclideanManifold`)
     """
 
-    def __init__(self, args, manifold: Manifold = EuclideanManifold()):
-        super(GraphClassification, self).__init__()
-        self.manifold = manifold
+    def __init__(
+        self, 
+        input_dims: int = 5, 
+        conv_params: ty.List = [[32, 32], [32, 32], [64, 64], [64, 64], [128, 128], [128, 128]],
+        #conv_params: ty.List = [[32, 32], [64, 64], [128, 128]],
+        num_centroid: int = 100,
+        num_class: int = 2,
+        manifold: str = "euclidean",
+    ) -> None:
+        super(HyperbolicGNN, self).__init__()
+        if manifold == "euclidean":
+            self.manifold = EuclideanManifold()
+        elif manifold == "poincare":
+            self.manifold = PoincareBallManifold()
+        elif manifold == "lorentz":
+            self.manifold = LorentzManifold()
+        else: 
+            self.manifold = EuclideanManifold()
+            warnings.warn("No valid manifold - using Euclidean as default")
+        
+        self.bn_fts = nn.BatchNorm1d(input_dims)
 
-        self.embedding = nn.Linear(args.in_features, args.embed_dim, bias=False)
-        if args.weight_init and args.weight_init == 'xavier':
-            nn.init.xavier_uniform_(self.embedding.weight.data)
+        self.edge_convs = nn.ModuleList()
+        for idx, channels in enumerate(conv_params):
+            in_feat = input_dims if idx == 0 else conv_params[idx - 1][-1]
+            self.edge_convs.append(ManifoldEdgeConv(in_feat=in_feat, 
+                                                    out_feats=channels))
 
-        self.layers = torch.nn.ModuleList()
-        for i in range(args.num_layers):
-            conv = GraphConv(args.embed_dim, args.embed_dim, bias=False)
-            if args.weight_init and args.weight_init == 'xavier':
-                nn.init.xavier_uniform_(conv.weight)
-            self.layers.append(ManifoldConv(conv, manifold, 
-                dropout=args.dropout, nonlin=torch.nn.LeakyReLU(0.3), from_euclidean=i == 0))
+        self.centroid_distance = CentroidDistance(embed_dim=conv_params[-1][-1], 
+                                                num_centroid=num_centroid,
+                                                manifold=self.manifold)
 
-        self.centroid_distance = CentroidDistance(args.num_centroid, 
-                args.embed_dim, manifold, args.weight_init)
+        self.fc = nn.Linear(num_centroid, num_class)
 
-        self.output_linear = nn.Linear(args.num_centroid, args.num_class)
-        if args.weight_init and args.weight_init == 'xavier':
-            nn.init.xavier_uniform_(self.output_linear.weight.data)
-            nn.init.uniform_(self.output_linear.bias.data, -1e-4, 1e-4)
-
-
-    def forward(self, graph):
-        x = self.embedding(graph.ndata['features'])
-        #x = self.embedding(graph.ndata['pmu'])
-        for layer in self.layers:
-            x = layer(graph, x)
-        centroid_dist = self.centroid_distance(graph, x)
-        return self.output_linear(centroid_dist)
+    def forward(self, batch_graph):
+        x = self.bn_fts(batch_graph.ndata['features'])
+        for idx, conv in enumerate(self.edge_convs):
+            x = conv(batch_graph, x)
+        centroid_dist = self.centroid_distance(batch_graph, x)
+        return self.fc(centroid_dist)

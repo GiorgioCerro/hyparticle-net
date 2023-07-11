@@ -56,6 +56,11 @@ def ROC_area(signal_eff, background_eff):
       return torch.trapz(background_eff[normal_order], signal_eff[normal_order]).item()
 
 
+def bkg_rejection_at_threshold(signal_eff, background_eff, sig_eff=0.5):
+    """Background rejection at a given signal efficiency."""
+    return 1 / (1 - background_eff[torch.argmin(torch.abs(signal_eff - sig_eff)) + 1])
+
+
 EX = {".h5", ".hdf5"}
 def evt_read(split_dir: Path):
     split_dir = Path(split_dir)

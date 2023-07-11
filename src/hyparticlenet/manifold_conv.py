@@ -2,7 +2,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from hyparticlenet.hgnn.nn.manifold import Manifold, EuclideanManifold
+from hyparticlenet.manifold import Manifold, EuclideanManifold
 
 
 class ManifoldConv(torch.nn.Module):

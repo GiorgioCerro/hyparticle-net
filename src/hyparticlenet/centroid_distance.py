@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from dgl.nn import AvgPooling
-from hyparticlenet.hgnn.nn.manifold import Manifold, EuclideanManifold
+from hyparticlenet.manifold import Manifold, EuclideanManifold
 
 
 class CentroidDistance(nn.Module):
@@ -18,21 +18,25 @@ class CentroidDistance(nn.Module):
             (default: :obj:`None`)
     """
 
-    def __init__(self, num_centroid, embed_dim, manifold: Manifold = EuclideanManifold(), weight_init = None):
+    def __init__(
+        self, 
+        embed_dim: int,
+        num_centroid: int, 
+        manifold: Manifold = EuclideanManifold(), 
+    ) -> None:
         super(CentroidDistance, self).__init__()
-        self.num_centroid = num_centroid
         self.embed_dim = embed_dim
+        self.num_centroid = num_centroid
         self.manifold = manifold
 
-        self.centroid_embedding = nn.Embedding(num_centroid, embed_dim, sparse=False, scale_grad_by_freq=False)
-        if weight_init and weight_init == 'xavier':
-            nn.init.xavier_uniform_(self.centroid_embedding.weight.data)
-
+        self.centroid_embedding = nn.Embedding(num_centroid, embed_dim, 
+                                        sparse=False, scale_grad_by_freq=False)
         self.avgpool = AvgPooling()
 
     def forward(self, graph, x):
         #if batch is None:
         #    batch = x.new_zeros(x.size(0)).long()
+        x = self.manifold.exp(x)
         num_nodes = x.size(0)
         x = x.unsqueeze(1).expand(-1, self.num_centroid, -1).contiguous().view(-1, self.embed_dim)
         centroids = self.manifold.exp(self.centroid_embedding(torch.arange(self.num_centroid, device=x.device)))

@@ -9,10 +9,9 @@ from tqdm import tqdm
 import click
 from collections import OrderedDict
 
-from hyparticlenet.hgnn.util import wandb_cluster_mode, count_params, collate_fn
-from hyparticlenet.hgnn.util import worker_init_fn, ROC_area, bkg_rejection_at_threshold
-from hyparticlenet.hgnn.models.graph_classification import GraphClassification
-from hyparticlenet.hgnn.nn.manifold import EuclideanManifold, PoincareBallManifold, LorentzManifold
+from hyparticlenet.util import wandb_cluster_mode, count_params, collate_fn
+from hyparticlenet.util import worker_init_fn, ROC_area, bkg_rejection_at_threshold
+from hyparticlenet.hgnn import HyperbolicGNN
 
 from dgl.dataloading import GraphDataLoader
 from hyparticlenet.data_handler import ParticleDataset
@@ -28,7 +27,7 @@ warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', 
 
 
 def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader):
-    loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
+    loss_function = torch.nn.CrossEntropyLoss(reduction="mean")
     soft = torch.nn.Softmax(dim=1)
     metric_scores = MetricCollection(dict(
           accuracy = metrics.BinaryAccuracy(),
@@ -75,23 +74,24 @@ def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader)
         )
 
     wandb.log({
-        'accuracy': scores['accuracy'].item(),
-        'precision': scores['precision'].item(),
-        'recall': scores['recall'].item(),
-        'f1': scores['f1'].item(),
-        'loss': total_loss/len(dataloader),
-        'val/accuracy': val_acc,
-        'val/auc': val_auc,
-        'val/loss': val_loss,
+        "accuracy": scores['accuracy'].item(),
+        "precision": scores['precision'].item(),
+        "recall": scores['recall'].item(),
+        "f1": scores['f1'].item(),
+        "loss": total_loss/len(dataloader),
+        "val/accuracy": val_acc,
+        "val/auc": val_auc,
+        "val/loss": val_loss,
     })
 
-    scheduler.step(val_loss)
+    #scheduler.step(val_loss)
+    scheduler.step()
     metric_scores.reset()
     return model, optim
 
 
 def evaluate(device, model, dataloader, testing=None):
-    loss_function = torch.nn.CrossEntropyLoss(reduction='mean')
+    loss_function = torch.nn.CrossEntropyLoss(reduction="mean")
     soft = torch.nn.Softmax(dim=1)
     metric_scores = MetricCollection(dict(
           accuracy = metrics.BinaryAccuracy(),
@@ -119,8 +119,8 @@ def evaluate(device, model, dataloader, testing=None):
     auc = ROC_area(eff_s, eff_b)
         
     if testing:
-        bkg_rej_05 = bkg_rejection_at_threshold(eff_b, eff_s, sig_eff=0.5)
-        bkg_rej_07 = bkg_rejection_at_threshold(eff_b, eff_s, sig_eff=0.7)
+        bkg_rej_05 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.5)
+        bkg_rej_07 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.7)
         return accuracy, auc, loss_temp/len(dataloader), bkg_rej_05, bkg_rej_07
     else:
         return accuracy, auc, loss_temp/len(dataloader)
@@ -132,16 +132,16 @@ def enter_process_group(world_size: int, rank: int):
     multiprocessing spawner.
     """
     torch.distributed.init_process_group(
-        backend='nccl',
-        init_method='tcp://127.0.0.1:12359',
+        backend="nccl",
+        init_method="tcp://127.0.0.1:12359",
         world_size=world_size,
         rank=rank,
     )
     if torch.cuda.is_available():
-        device = torch.device(f'cuda:{rank}')
+        device = torch.device(f"cuda:{rank}")
         torch.cuda.set_device(device)
     else:
-        device = torch.device('cpu')
+        device = torch.device("cpu")
     try:
         yield device
     finally:
@@ -152,20 +152,11 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
     with ctx.ExitStack() as stack:
         device = stack.enter_context(enter_process_group(NUM_GPUS, rank))
         _ = stack.enter_context(
-                wandb.init(project='training-performance', entity='office4005', config=dict(args),
+                wandb.init(project="HyperGNN-edgeconv", entity="office4005", config=dict(args),
                 group=group_id)
         )
-        if args.manifold == 'euclidean':
-            manifold = EuclideanManifold()
-        elif args.manifold == 'poincare':
-            manifold = PoincareBallManifold()
-        elif args.manifold == 'lorentz':
-            manifold = LorentzManifold()
-        else:
-            manifold = EuclideanManifold()
-            warnings.warn('No valid manifold was given as input, using Euclidean as default')
-
-        model = GraphClassification(args, manifold).to(device)
+        model = HyperbolicGNN(input_dims=5, num_centroid=args.num_centroid, 
+                            num_class=2, manifold=args.manifold).to(device)
         #model = GraphClassification(args, manifold)
         #state_dict = torch.load("logs/" + args.best_model_name + ".pt", map_location="cpu")
         #dt = OrderedDict()
@@ -175,19 +166,21 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
         #model.to(device)
 
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[device], output_device=device)
+            model, device_ids=[device], output_device=device, find_unused_parameters=True)
         optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', 
-            patience=10, factor=0.5)
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode="min", 
+        #    patience=10, factor=0.5)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[20, 30, 40],
+                                                        gamma=0.5)
         if rank == 0:
             print(f"Model with {count_params(model)} trainable parameters")
             print(f"Training over {len(dataset)} events")
         #print(f"Validation dataset contains {len(valid_dataset)} events")
         for epoch in range(args.epochs):
             if rank == 0:
-                print(f'Epoch: {epoch:n}')
+                print(f"Epoch: {epoch:n}")
                 if epoch == args.epochs-1:
-                    print(f'Final epoch')
+                    print(f"Final epoch")
             init = time.time()
             dataloader = GraphDataLoader(
                 dataset=dataset, 
@@ -220,11 +213,11 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
                 dataloader, val_loader)
             
             if rank == 0: 
-                print(f'epoch time: {(time.time() - init):.2f}')
-                print(10*'~')
+                print(f"epoch time: {(time.time() - init):.2f}")
+                print(10*"~")
                 p = Path(args.logdir)
                 p.mkdir(parents=True, exist_ok=True)
-                torch.save(model.state_dict(), p.joinpath(f'{args.best_model_name}.pt'))
+                torch.save(model.state_dict(), p.joinpath(f"{args.best_model_name}.pt"))
 
         
         print(20*"=")
@@ -252,34 +245,48 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
 
 
 @click.command()
-@click.argument("config_path", type=click.Path(exists=True))
-def main(config_path):
-    #config_path = 'configs/jets_config.yaml'
-    args = OmegaConf.load(config_path)
-    args.train_samples=1_000_000
-    args.valid_samples=100_000
+@click.option("--manifold", type=click.Choice(["euclidean", "poincare", "lorentz"]),
+            default="euclidean")
+
+@click.argument("num_class", type=click.INT, default=2)
+@click.argument("num_centroid", type=click.INT, default=250)
+@click.argument("lr", type=click.FLOAT, default=0.001)
+@click.argument("dropout", type=click.FLOAT, default=0.1)
+@click.argument("batch_size", type=click.INT, default=256)
+@click.argument("epochs", type=click.INT, default=50)
+
+@click.argument("data_path", type=click.Path(exists=True), 
+            default="/scratch/gc2c20/data/jet_tagging")
+@click.argument("train_samples", type=click.INT, default=1_000_000)
+@click.argument("valid_samples", type=click.INT, default=100_000)
+@click.argument("test_samples", type=click.INT, default=100_000)
+
+
+def main(**kwargs):
+    args = OmegaConf.create(kwargs)
     print(f"Working with the following configs:")
     for key, val in args.items():
         print(f"{key}: {val}")
 
     # Jets Data sets
-    PATH = '/scratch/gc2c20/data/jet_tagging'
-    train_dataset = ParticleDataset(Path(PATH + '/train_sig.hdf5'), 
-                Path(PATH + '/train_bkg.hdf5'), num_samples=args.train_samples)
-    valid_dataset = ParticleDataset(Path(PATH + '/valid_sig.hdf5'), 
-                Path(PATH + '/valid_bkg.hdf5'), num_samples=args.valid_samples)
-    test_dataset = ParticleDataset(Path(PATH + '/test_sig.hdf5'),
-                Path(PATH + '/test_bkg.hdf5'), num_samples=args.valid_samples)
+    PATH = args.data_path
+    train_dataset = ParticleDataset(Path(PATH + "/train_sig.hdf5"), 
+                Path(PATH + "/train_bkg.hdf5"), num_samples=args.train_samples)
+    valid_dataset = ParticleDataset(Path(PATH + "/valid_sig.hdf5"), 
+                Path(PATH + "/valid_bkg.hdf5"), num_samples=args.valid_samples)
+    test_dataset = ParticleDataset(Path(PATH + "/test_sig.hdf5"),
+                Path(PATH + "/test_bkg.hdf5"), num_samples=args.valid_samples)
     
 
-    args.best_model_name = 'best_' + args.manifold + '_dim' + str(args.embed_dim)
+    args.logdir = "logs/"
+    args.best_model_name = "best_" + args.manifold
 
     wandb_cluster_mode()
-    group_id = args.manifold + '_dim' + str(args.embed_dim) + '_5l'
+    group_id = args.manifold + "_02"
     torch.multiprocessing.spawn(train, args=(args, train_dataset, valid_dataset,
         test_dataset, group_id), nprocs=NUM_GPUS)
 
 
 
-if __name__=='__main__':
+if __name__=="__main__":
     sys.exit(main())

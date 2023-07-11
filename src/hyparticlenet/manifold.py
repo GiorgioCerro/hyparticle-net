@@ -2,8 +2,8 @@ import abc
 import torch
 from torch.autograd import Function
 
-from hyparticlenet.hgnn.nn.poincare_distance import PoincareDistance
-from hyparticlenet.hgnn.util import dot, clamp_min, atanh
+from hyparticlenet.poincare_distance import PoincareDistance
+from hyparticlenet.util import dot, clamp_min, atanh
 
 
 class Manifold(abc.ABC):
