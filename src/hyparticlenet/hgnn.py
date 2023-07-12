@@ -24,7 +24,7 @@ class HyperbolicGNN(nn.Module):
         conv_params: ty.List = [[32, 32], [32, 32], [64, 64], [64, 64], [128, 128], [128, 128]],
         #conv_params: ty.List = [[32, 32], [64, 64], [128, 128]],
         num_centroid: int = 100,
-        num_class: int = 2,
+        num_classes: int = 2,
         manifold: str = "euclidean",
     ) -> None:
         super(HyperbolicGNN, self).__init__()
@@ -50,7 +50,7 @@ class HyperbolicGNN(nn.Module):
                                                 num_centroid=num_centroid,
                                                 manifold=self.manifold)
 
-        self.fc = nn.Linear(num_centroid, num_class)
+        self.fc = nn.Linear(num_centroid, num_classes)
 
     def forward(self, batch_graph):
         x = self.bn_fts(batch_graph.ndata['features'])

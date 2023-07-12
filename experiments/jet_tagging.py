@@ -13,6 +13,8 @@ from hyparticlenet.util import wandb_cluster_mode, count_params, collate_fn
 from hyparticlenet.util import worker_init_fn, ROC_area, bkg_rejection_at_threshold
 from hyparticlenet.hgnn import HyperbolicGNN
 
+from lundnet.LundNet import LundNet
+
 from dgl.dataloading import GraphDataLoader
 from hyparticlenet.data_handler import ParticleDataset
 
@@ -26,7 +28,7 @@ import warnings
 warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling")
 
 
-def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader):
+def training_loop(rank, args, device, model, optim, scheduler, dataloader, val_loader):
     loss_function = torch.nn.CrossEntropyLoss(reduction="mean")
     soft = torch.nn.Softmax(dim=1)
     metric_scores = MetricCollection(dict(
@@ -46,20 +48,27 @@ def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader)
         logits = model(graph.to(device))
 
         loss = loss_function(logits, label)
+        loss.backward()
+        optim.step()
 
         pred = soft(logits)[:, 1]
         metric_scores.update(pred, label)
+        total_loss += loss.item()
 
-        loss.backward()
+        if args.manifold == "poincare":
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1 - 1e-5)
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1 - 1e-5)
-
-        total_loss += loss.item() #* num_graphs
-        optim.step()
 
     scores = metric_scores.compute()
-    val_acc, val_auc, val_loss = evaluate(device, model, val_loader)
-
+    # evaluation
+    scores_eval, val_loss = evaluate(device, model, val_loader)
+    fpr, tpr, threshs = scores_eval["ROC"]
+    eff_s = tpr
+    eff_b = 1 - fpr
+    auc = ROC_area(eff_s, eff_b)
+    bkg_rej_05 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.5)
+    bkg_rej_07 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.7)
+        
     if rank == 0:
         print(
             f"loss: {(total_loss/len(dataloader)):.5f}, "
@@ -68,8 +77,8 @@ def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader)
             f"recall: {scores['recall'].item():.1%}, "
             f"f1: {scores['f1'].item():.1%}, "
             f"\n validation: "
-            f"val_acc: {val_acc:.1%},"
-            f"val_auc: {val_auc:.1%},"
+            f"val_acc: {scores_eval['accuracy'].item():.1%}, "
+            f"val_auc: {auc:.1%}, "
             f"val_loss: {val_loss:.5f}, "
         )
 
@@ -79,9 +88,11 @@ def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader)
         "recall": scores['recall'].item(),
         "f1": scores['f1'].item(),
         "loss": total_loss/len(dataloader),
-        "val/accuracy": val_acc,
-        "val/auc": val_auc,
+        "val/accuracy": scores_eval['accuracy'].item(),
+        "val/auc": auc,
         "val/loss": val_loss,
+        "val/bkg_rej_05": bkg_rej_05,
+        "val/bkg_rej_07": bkg_rej_07,
     })
 
     #scheduler.step(val_loss)
@@ -90,11 +101,14 @@ def training_loop(rank, device, model, optim, scheduler, dataloader, val_loader)
     return model, optim
 
 
-def evaluate(device, model, dataloader, testing=None):
+def evaluate(device, model, dataloader):
     loss_function = torch.nn.CrossEntropyLoss(reduction="mean")
     soft = torch.nn.Softmax(dim=1)
-    metric_scores = MetricCollection(dict(
+    metric_scores_eval = MetricCollection(dict(
           accuracy = metrics.BinaryAccuracy(),
+          precision = metrics.BinaryPrecision(),
+          recall = metrics.BinaryRecall(),
+          f1 = metrics.BinaryF1Score(),
           ROC = ROC(task="binary"),
     )).to(device)
     loss_temp = 0
@@ -107,23 +121,13 @@ def evaluate(device, model, dataloader, testing=None):
 
             logits = model(graph.to(device))
             pred = soft(logits)[:, 1]
-            metric_scores.update(pred, label)
+            metric_scores_eval.update(pred, label)
 
             loss_temp += loss_function(logits, label).item() #* num_graphs
     
-    scores = metric_scores.compute()
-    accuracy = scores["accuracy"].item()
-    fpr, tpr, threshs = scores["ROC"]
-    eff_s = tpr
-    eff_b = 1 - fpr
-    auc = ROC_area(eff_s, eff_b)
-        
-    if testing:
-        bkg_rej_05 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.5)
-        bkg_rej_07 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.7)
-        return accuracy, auc, loss_temp/len(dataloader), bkg_rej_05, bkg_rej_07
-    else:
-        return accuracy, auc, loss_temp/len(dataloader)
+    scores_eval = metric_scores_eval.compute()
+    #metric_scores_eval.reset()
+    return scores_eval, loss_temp/len(dataloader)
 
 
 @ctx.contextmanager
@@ -155,8 +159,16 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
                 wandb.init(project="HyperGNN-edgeconv", entity="office4005", config=dict(args),
                 group=group_id)
         )
-        model = HyperbolicGNN(input_dims=5, num_centroid=args.num_centroid, 
-                            num_class=2, manifold=args.manifold).to(device)
+        if args.model == "lundnet5":
+            conv_params = [[32, 32], [32, 32], [64, 64], [64, 64], [128, 128], [128, 128]]
+            fc_params = [(256, 0.1)]
+            use_fusion = True
+            batch_size = args.batch_size
+            model = LundNet(input_dims=5, num_classes=2, fc_params=fc_params,
+                            use_fusion=use_fusion).to(device)
+        else:
+            model = HyperbolicGNN(input_dims=5, num_centroid=args.num_centroid, 
+                            num_classes=2, manifold=args.manifold).to(device)
         #model = GraphClassification(args, manifold)
         #state_dict = torch.load("logs/" + args.best_model_name + ".pt", map_location="cpu")
         #dt = OrderedDict()
@@ -170,8 +182,8 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
         optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
         #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode="min", 
         #    patience=10, factor=0.5)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[20, 30, 40],
-                                                        gamma=0.5)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=[10, 20],
+                                                        gamma=0.1)
         if rank == 0:
             print(f"Model with {count_params(model)} trainable parameters")
             print(f"Training over {len(dataset)} events")
@@ -209,8 +221,8 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
                 worker_init_fn=worker_init_fn,
             )
 
-            model, optim = training_loop(rank, device, model, optim, scheduler,
-                dataloader, val_loader)
+            model, optim = training_loop(rank, args, device, model, optim, 
+                                        scheduler, dataloader, val_loader)
             
             if rank == 0: 
                 print(f"epoch time: {(time.time() - init):.2f}")
@@ -235,35 +247,41 @@ def train(rank, args, dataset, valid_dataset, test_dataset, group_id):
             collate_fn=collate_fn,
             worker_init_fn=worker_init_fn,
         )
-        test_acc, test_auc, test_loss, bkg_rej05, bkg_rej07 = evaluate(device, 
-            model, test_loader, testing=True)
-        print(f"Accuracy: {test_acc:.5f}")
-        print(f"AUC: {test_auc:.5f}")
+        scores_test, test_loss = evaluate(device, model, test_loader)
+        fpr, tpr, threshs = scores_test["ROC"]
+        eff_s = tpr
+        eff_b = 1 - fpr
+        auc = ROC_area(eff_s, eff_b)
+        bkg_rej_05 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.5)
+        bkg_rej_07 = bkg_rejection_at_threshold(eff_s, eff_b, sig_eff=0.7)
+        
+        print(f"Accuracy: {scores_test['accuracy'].item():.5f}")
+        print(f"AUC: {auc:.5f}")
         print(f"Loss: {test_loss:.5f}")
-        print(f"Inv_bkg_at_sig_05: {bkg_rej05:.5f}")
-        print(f"Inv_bkg_at_sig_07: {bkg_rej07:.5f}")
+        print(f"Inv_bkg_at_sig_05: {bkg_rej_05:.5f}")
+        print(f"Inv_bkg_at_sig_07: {bkg_rej_07:.5f}")
 
 
 @click.command()
-@click.option("--manifold", type=click.Choice(["euclidean", "poincare", "lorentz"]),
-            default="euclidean")
-
-@click.argument("num_class", type=click.INT, default=2)
-@click.argument("num_centroid", type=click.INT, default=250)
+@click.option("--model", type=click.Choice(["hgnn-euclidean", "hgnn-poincare",
+            "hgnn-lorentz", "lundnet5"]), default="hgnn-euclidean")
+@click.argument("num_classes", type=click.INT, default=2)
+@click.argument("num_centroid", type=click.INT, default=100)
 @click.argument("lr", type=click.FLOAT, default=0.001)
-@click.argument("dropout", type=click.FLOAT, default=0.1)
-@click.argument("batch_size", type=click.INT, default=256)
-@click.argument("epochs", type=click.INT, default=50)
-
+@click.argument("dropout", type=click.FLOAT, default=0.)
+@click.argument("batch_size", type=click.INT, default=128)
+@click.argument("epochs", type=click.INT, default=30)
 @click.argument("data_path", type=click.Path(exists=True), 
             default="/scratch/gc2c20/data/jet_tagging")
 @click.argument("train_samples", type=click.INT, default=1_000_000)
 @click.argument("valid_samples", type=click.INT, default=100_000)
 @click.argument("test_samples", type=click.INT, default=100_000)
-
-
 def main(**kwargs):
     args = OmegaConf.create(kwargs)
+    if args.model != "lundnet5":
+        args.manifold = args.model[5:]
+    else:
+        args.manifold = "none"
     print(f"Working with the following configs:")
     for key, val in args.items():
         print(f"{key}: {val}")
@@ -279,10 +297,10 @@ def main(**kwargs):
     
 
     args.logdir = "logs/"
-    args.best_model_name = "best_" + args.manifold
+    args.best_model_name = "best_" + args.model
 
     wandb_cluster_mode()
-    group_id = args.manifold + "_02"
+    group_id = args.model + "-2"
     torch.multiprocessing.spawn(train, args=(args, train_dataset, valid_dataset,
         test_dataset, group_id), nprocs=NUM_GPUS)
 
